@@ -663,7 +663,7 @@ class APIHandler(BaseHTTPRequestHandler):
             f.write(csv_data)
 
         _set_state(
-            status='idle', progress=0, stage='准备中',
+            status='running', progress=1, stage='准备中',
             csv_name=csv_name, error='', log=[],
             results={
                 'total_frames': 0, 'nodes': 0, 'edges': 0,
