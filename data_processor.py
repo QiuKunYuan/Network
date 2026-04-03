@@ -1,8 +1,9 @@
 # src/data_processor.py
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Tuple, Any
+from typing import Dict, List, Tuple, Any, Optional
 import os
+
 try:
     import chardet
     HAS_CHARDET = True
@@ -10,20 +11,44 @@ except ImportError:
     HAS_CHARDET = False
 
 
+# ── 列名映射表：支持中文全角括号列名和纯英文列名两种格式 ──────────────
+_COL_ALIASES = {
+    'time':      ['time（时间）', 'time', 'Time', 'timestamp'],
+    'type':      ['type（信息类型）', 'type', 'Type', 'msg_type'],
+    'platform':  ['platform（所有者或源平台）', 'platform', 'Platform', 'owner'],
+    'interactor':['interactor', 'Interactor', 'target'],
+    'component': ['component', 'Component'],
+    'track_id':  ['track id', 'track_id', 'TrackId'],
+    'col8':      ['8'],   # 状态列（TRUE/FALSE）
+}
+
+
+def _find_col(df: pd.DataFrame, key: str) -> Optional[str]:
+    """在 DataFrame 中查找列名，支持别名映射，找不到返回 None"""
+    for alias in _COL_ALIASES.get(key, [key]):
+        if alias in df.columns:
+            return alias
+    return None
+
+
 class AFSIMDataProcessor:
     def __init__(self, file_path: str):
         self.file_path = file_path
         self.df = self._load_data_with_encoding()
         self.platforms = {}
+        # 列名快捷访问（避免每次都查找）
+        self._col = {k: _find_col(self.df, k) for k in _COL_ALIASES}
         self._preprocess_data()
+
+    # ─────────────────────────────────────────────
+    # 数据加载
+    # ─────────────────────────────────────────────
 
     def _detect_encoding(self) -> str:
         """自动检测文件编码（优先 gb18030，再用 chardet 兜底）"""
-        # 先用原始字节快速判断是否为 GB 系编码
         try:
             with open(self.file_path, 'rb') as f:
                 raw_data = f.read(10000)
-            # 尝试 gb18030 解码前几百字节，成功则直接返回
             raw_data[:500].decode('gb18030')
             print("快速检测：文件编码为 gb18030")
             return 'gb18030'
@@ -45,11 +70,9 @@ class AFSIMDataProcessor:
 
     def _load_data_with_encoding(self) -> pd.DataFrame:
         """使用自动检测的编码加载数据"""
-        # gb18030 是 gbk/gb2312 的超集，优先放在最前面
         encodings_to_try = ['gb18030', 'utf-8', 'gbk', 'gb2312', 'latin1', 'iso-8859-1', 'cp1252']
 
         detected_encoding = self._detect_encoding()
-        # 将检测到的编码插到最前面（去重）
         if detected_encoding and detected_encoding not in encodings_to_try:
             encodings_to_try.insert(0, detected_encoding)
         elif detected_encoding and encodings_to_try[0] != detected_encoding:
@@ -61,9 +84,7 @@ class AFSIMDataProcessor:
                 print(f"尝试使用 {encoding} 编码读取文件...")
                 df = pd.read_csv(self.file_path, encoding=encoding, low_memory=False)
                 print(f"✅ 使用 {encoding} 编码读取成功!")
-                # 规范化列名：去除首尾空格
                 df.columns = [c.strip() for c in df.columns]
-                print(f"列名列表: {list(df.columns)}")
                 return df
             except UnicodeDecodeError:
                 continue
@@ -84,43 +105,100 @@ class AFSIMDataProcessor:
         """数据预处理"""
         print(f"数据加载成功: {len(self.df)} 行, {len(self.df.columns)} 列")
 
-        # 将时间列转换为数值型（AFSIM 时间列为秒数，可能读入为 object）
-        time_col = self.df.columns[0]  # 第一列为时间列
+        # 时间列数值化
+        time_col = self._col.get('time') or self.df.columns[0]
         if self.df[time_col].dtype == object:
             self.df[time_col] = pd.to_numeric(self.df[time_col], errors='coerce')
-            print(f"时间列 '{time_col}' 已转换为数值型，NaN 行数: {self.df[time_col].isna().sum()}")
-        print(f"时间范围: {self.df[time_col].min()} ~ {self.df[time_col].max()} 秒")
+            nan_count = self.df[time_col].isna().sum()
+            if nan_count > 0:
+                print(f"时间列 '{time_col}' 转换后 NaN 行数: {nan_count}，已丢弃")
+                self.df = self.df.dropna(subset=[time_col])
+        print(f"时间范围: {self.df[time_col].min():.1f} ~ {self.df[time_col].max():.1f} 秒")
+
+        # 打印消息类型分布（帮助调试）
+        type_col = self._col.get('type')
+        if type_col:
+            msg_types = self.df[type_col].value_counts()
+            print(f"消息类型分布（前10）:")
+            for t, c in msg_types.head(10).items():
+                print(f"  {t}: {c}")
+
+    # ─────────────────────────────────────────────
+    # 数据提取（健壮版）
+    # ─────────────────────────────────────────────
+
+    def _get_col(self, key: str) -> Optional[str]:
+        """安全获取列名，找不到返回 None"""
+        return self._col.get(key)
+
+    def _filter_by_type(self, msg_type: str) -> pd.DataFrame:
+        """按消息类型过滤，列名不存在时返回空 DataFrame"""
+        col = self._get_col('type')
+        if col is None:
+            return pd.DataFrame()
+        return self.df[self.df[col] == msg_type]
+
+    def extract_platform_hierarchy(self) -> Dict[str, str]:
+        """提取平台层级关系（从 MsgPlatformInfo 的 component 字段解析 default:xxx）"""
+        print("提取平台层级关系...")
+        hierarchy = {}
+
+        platform_col = self._get_col('platform')
+        component_col = self._get_col('component')
+        if not platform_col or not component_col:
+            print("  ⚠️ 缺少 platform 或 component 列，跳过层级提取")
+            return hierarchy
+
+        platform_info = self._filter_by_type('MsgPlatformInfo')
+        for _, row in platform_info.iterrows():
+            platform_id = row[platform_col]
+            component = str(row.get(component_col, ''))
+            if 'default:' in component:
+                owner = component.split('default:')[-1].strip()
+                if pd.notna(platform_id) and owner and platform_id != owner:
+                    hierarchy[platform_id] = owner
+
+        print(f"提取到 {len(hierarchy)} 个层级关系")
+        if hierarchy:
+            for p, o in list(hierarchy.items())[:3]:
+                print(f"  {p} -> {o}")
+        return hierarchy
 
     def extract_communication_links(self) -> List[Tuple[str, str, float]]:
         """提取通信链路"""
         print("提取通信链路...")
         links = []
 
-        # 方法1: 从MsgPartStatus中提取通信关系
-        comm_data = self.df[
-            (self.df['type（信息类型）'] == 'MsgPartStatus') &
-            (self.df['component'] == 'comm')
-            ]
+        platform_col = self._get_col('platform')
+        component_col = self._get_col('component')
+        col8 = self._get_col('col8')
 
-        # 找到活跃的通信组件
-        active_comms = comm_data[comm_data['8'] == 'TRUE']
+        if platform_col and component_col:
+            type_col = self._get_col('type')
+            comm_mask = (
+                (self.df[type_col] == 'MsgPartStatus') &
+                (self.df[component_col] == 'comm')
+            ) if type_col else pd.Series(False, index=self.df.index)
 
-        for platform in active_comms['platform（所有者或源平台）'].unique():
-            if pd.notna(platform):
-                # 根据平台类型推断通信关系
-                if 'radar' in platform.lower():
+            comm_data = self.df[comm_mask]
+            if col8:
+                active_comms = comm_data[comm_data[col8].astype(str).str.upper() == 'TRUE']
+            else:
+                active_comms = comm_data
+
+            for platform in active_comms[platform_col].dropna().unique():
+                p = str(platform).lower()
+                if 'radar' in p:
                     links.append((platform, 'command_center', 0.8))
-                elif 'sam' in platform.lower():
+                elif 'sam' in p:
                     links.append((platform, 'command_center', 0.9))
-                elif 'command' in platform.lower() or 'cmdr' in platform.lower():
-                    # 指挥节点之间的通信
+                elif 'cmdr' in p or 'command' in p or 'iads' in p:
                     links.append((platform, 'radar_network', 1.0))
 
-        # 方法2: 从平台层级推断通信
+        # 从层级关系补充通信链路
         hierarchy = self.extract_platform_hierarchy()
         for subordinate, commander in hierarchy.items():
-            if pd.notna(subordinate) and pd.notna(commander):
-                links.append((subordinate, commander, 0.7))
+            links.append((subordinate, commander, 0.7))
 
         print(f"提取到 {len(links)} 个通信链路")
         return links
@@ -130,135 +208,135 @@ class AFSIMDataProcessor:
         print("提取传感器探测关系...")
         detections = []
 
-        # 从MsgSensorDetectionChange中提取
-        sensor_data = self.df[self.df['type（信息类型）'] == 'MsgSensorDetectionChange']
+        platform_col = self._get_col('platform')
+        interactor_col = self._get_col('interactor')
+        col8 = self._get_col('col8')
 
-        for _, row in sensor_data.iterrows():
-            sensor = row['platform（所有者或源平台）']
-            target = row['interactor']
-            if pd.notna(sensor) and pd.notna(target) and row.get('8') == 'TRUE':
-                detections.append((sensor, target, 1.0))
+        if platform_col and interactor_col:
+            sensor_data = self._filter_by_type('MsgSensorDetectionChange')
+            for _, row in sensor_data.iterrows():
+                sensor = row[platform_col]
+                target = row[interactor_col]
+                status = str(row.get(col8, '')).upper() if col8 else 'TRUE'
+                if pd.notna(sensor) and pd.notna(target) and status == 'TRUE':
+                    detections.append((str(sensor), str(target), 1.0))
 
-        # 从传感器组件状态推断
-        sensor_parts = self.df[
-            (self.df['type（信息类型）'] == 'MsgPartStatus') &
-            (self.df['component'].isin(['sensor', 'ew_radar', 'acq_radar', 'esm']))
+        # 从活跃传感器组件补充
+        component_col = self._get_col('component')
+        type_col = self._get_col('type')
+        if platform_col and component_col and type_col:
+            sensor_parts = self.df[
+                (self.df[type_col] == 'MsgPartStatus') &
+                (self.df[component_col].isin(['sensor', 'ew_radar', 'acq_radar', 'esm', 'radar']))
             ]
+            if col8:
+                active = sensor_parts[sensor_parts[col8].astype(str).str.upper() == 'TRUE']
+            else:
+                active = sensor_parts
 
-        active_sensors = sensor_parts[sensor_parts['8'] == 'TRUE']
-        for platform in active_sensors['platform（所有者或源平台）'].unique():
-            if pd.notna(platform):
-                # 雷达探测空中目标
-                if 'radar' in platform.lower():
+            for platform in active[platform_col].dropna().unique():
+                p = str(platform).lower()
+                if 'radar' in p:
                     detections.append((platform, 'air_targets', 0.6))
-                # ESM探测辐射源
-                elif 'esm' in platform.lower() or 'soj' in platform.lower():
+                elif 'esm' in p or 'soj' in p:
                     detections.append((platform, 'emitter_sources', 0.5))
 
         print(f"提取到 {len(detections)} 个传感器探测")
         return detections
 
-    def extract_platform_hierarchy(self) -> Dict[str, str]:
-        """提取平台层级关系"""
-        print("提取平台层级关系...")
-        hierarchy = {}
+    def extract_weapon_engagements(self) -> List[Tuple[str, str, float]]:
+        """提取武器打击关系（MsgWeaponFired）"""
+        print("提取武器打击关系...")
+        engagements = []
+        platform_col = self._get_col('platform')
+        interactor_col = self._get_col('interactor')
+        if not platform_col or not interactor_col:
+            return engagements
 
-        platform_info = self.df[self.df['type（信息类型）'] == 'MsgPlatformInfo']
+        weapon_data = self._filter_by_type('MsgWeaponFired')
+        for _, row in weapon_data.iterrows():
+            launcher = row[platform_col]
+            target = row[interactor_col]
+            if pd.notna(launcher) and pd.notna(target):
+                engagements.append((str(launcher), str(target), 1.0))
 
-        for _, row in platform_info.iterrows():
-            platform_id = row['platform（所有者或源平台）']
-            component = row.get('component', '')
+        print(f"提取到 {len(engagements)} 个武器打击关系")
+        return engagements
 
-            if pd.notna(component) and 'default:' in str(component):
-                owner = str(component).split('default:')[-1].strip()
-                if pd.notna(platform_id) and pd.notna(owner) and platform_id != owner:
-                    hierarchy[platform_id] = owner
+    def extract_jamming_relations(self) -> List[Tuple[str, str, float]]:
+        """提取电子战干扰关系（MsgJammingRequestInitiated）"""
+        print("提取电子战干扰关系...")
+        jammings = []
+        platform_col = self._get_col('platform')
+        interactor_col = self._get_col('interactor')
+        if not platform_col or not interactor_col:
+            return jammings
 
-        print(f"提取到 {len(hierarchy)} 个层级关系")
-        if hierarchy:
-            print("示例关系:")
-            for platform, owner in list(hierarchy.items())[:3]:
-                print(f"  {platform} -> {owner}")
+        jamming_data = self._filter_by_type('MsgJammingRequestInitiated')
+        for _, row in jamming_data.iterrows():
+            jammer = row[platform_col]
+            target = row[interactor_col]
+            if pd.notna(jammer) and pd.notna(target):
+                jammings.append((str(jammer), str(target), 0.9))
 
-        return hierarchy
+        print(f"提取到 {len(jammings)} 个干扰关系")
+        return jammings
 
     def get_all_platforms(self) -> List[str]:
         """获取所有平台ID"""
-        platforms = self.df['platform（所有者或源平台）'].dropna().unique()
-        platform_list = [p for p in platforms if p and p != '']
+        platform_col = self._get_col('platform')
+        if not platform_col:
+            return []
+        platforms = self.df[platform_col].dropna().unique()
+        platform_list = [str(p) for p in platforms if p and str(p).strip()]
         print(f"发现 {len(platform_list)} 个唯一平台")
         return platform_list
 
-    def get_data_info(self):
+    def get_data_info(self) -> Dict[str, Any]:
         """获取数据基本信息"""
-        info = {
+        type_col = self._get_col('type')
+        platform_col = self._get_col('platform')
+        return {
             'total_rows': len(self.df),
             'total_columns': len(self.df.columns),
             'column_names': list(self.df.columns),
-            'message_types': self.df[
-                'type（信息类型）'].value_counts().to_dict() if 'type（信息类型）' in self.df.columns else {},
-            'platforms_count': self.df[
-                'platform（所有者或源平台）'].nunique() if 'platform（所有者或源平台）' in self.df.columns else 0
+            'message_types': self.df[type_col].value_counts().to_dict() if type_col else {},
+            'platforms_count': self.df[platform_col].nunique() if platform_col else 0,
         }
-        return info
 
-    def analyze_message_types(self):
-        """分析信息类型分布"""
-        if 'type（信息类型）' in self.df.columns:
-            msg_counts = self.df['type（信息类型）'].value_counts()
-            print("\n信息类型分布:")
-            for msg_type, count in msg_counts.items():
-                print(f"  {msg_type}: {count} 行")
-            return msg_counts
-        return {}
-
-    def get_time_windows(self, window_size: float = 100.0, step: float = 50.0):
-        """
-        将全量数据按照时间窗口切分
-        :param window_size: 每个时间窗口的长度（秒）
-        :param step: 窗口滑动的步长（秒）
-        """
-        # AFSIM CSV 通常第一列是时间戳，或者你可以指定时间列名
-        time_col = self.df.columns[0]
+    def get_time_windows(self, window_size: float = 120.0, step: float = 60.0):
+        """将全量数据按时间窗口切分"""
+        time_col = self._get_col('time') or self.df.columns[0]
         max_time = self.df[time_col].max()
+        min_time = self.df[time_col].min()
 
         windows = []
-        import numpy as np
-        for start in np.arange(0, max_time, step):
+        for start in np.arange(min_time, max_time, step):
             end = start + window_size
             subset = self.df[(self.df[time_col] >= start) & (self.df[time_col] < end)].copy()
             if not subset.empty:
                 windows.append((start, end, subset))
-        print(f"共生成 {len(windows)} 个时间窗口快照")
+
+        print(f"共生成 {len(windows)} 个时间窗口快照（窗口={window_size}s，步长={step}s）")
         return windows
 
-    # 构造动态图部分
     def extract_interactions(self, keyword1='soj', keyword2='ew_radar', output_path='interactions.csv'):
-        """
-        筛选两个实体关键字之间有交互的数据并保存
-        """
-        # 确保列名存在（防止列名不一致）
-        platform_col = 'platform（所有者或源平台）'
-        interactor_col = 'interactor'
-
-        if platform_col not in self.df.columns or interactor_col not in self.df.columns:
-            print(f"错误：数据中未找到必要的列 {platform_col} 或 {interactor_col}")
+        """筛选两个实体关键字之间有交互的数据并保存"""
+        platform_col = self._get_col('platform')
+        interactor_col = self._get_col('interactor')
+        if not platform_col or not interactor_col:
+            print(f"错误：数据中未找到必要的列")
             return None
 
-        # 构建筛选掩码
         mask = (
-                (self.df[platform_col].str.contains(keyword1, case=False, na=False) &
-                 self.df[interactor_col].str.contains(keyword2, case=False, na=False)) |
-                (self.df[platform_col].str.contains(keyword2, case=False, na=False) &
-                 self.df[interactor_col].str.contains(keyword1, case=False, na=False))
+            (self.df[platform_col].str.contains(keyword1, case=False, na=False) &
+             self.df[interactor_col].str.contains(keyword2, case=False, na=False)) |
+            (self.df[platform_col].str.contains(keyword2, case=False, na=False) &
+             self.df[interactor_col].str.contains(keyword1, case=False, na=False))
         )
-
         result_df = self.df[mask]
         print(f"从 {len(self.df)} 条数据中筛选出 {len(result_df)} 条交互记录")
-
         if output_path:
             result_df.to_csv(output_path, index=False)
             print(f"结果已保存至: {output_path}")
-
         return result_df
-

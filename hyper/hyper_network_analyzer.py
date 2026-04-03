@@ -1,17 +1,33 @@
 # src/hyper_network_analyzer.py
+import sys
+import os
 import networkx as nx
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Any
 from collections import defaultdict  # 添加这行
 
+# 将项目根目录加入 sys.path，确保能导入 shapely_gravity_analyzer 和 cascade_failure_simulator
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT_DIR = os.path.dirname(_THIS_DIR)
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+
+from shapely_gravity_analyzer import ShapelyGravityAnalyzer
+from cascade_failure_simulator import CascadeFailureSimulator
+
 
 class HyperNetworkAnalyzer:
-    def __init__(self):
-        pass
+    def __init__(self, shapley_samples: int = 200, cascade_rounds: int = 30):
+        """
+        :param shapley_samples: Shapley 值蒙特卡洛采样次数
+        :param cascade_rounds:  级联失效 Monte Carlo 轮数
+        """
+        self.shapley_analyzer = ShapelyGravityAnalyzer(n_samples=shapley_samples)
+        self.cascade_simulator = CascadeFailureSimulator(n_rounds=cascade_rounds)
 
     def analyze_hyper_network(self, hyper_network_data: Dict[str, Any]) -> Dict[str, Any]:
-        """分析超网结构"""
+        """分析超网结构（含 Shapley 重心分析 + 级联失效模拟）"""
         print("开始超网分析...")
 
         analysis_results = {}
@@ -27,6 +43,59 @@ class HyperNetworkAnalyzer:
 
         # 4. 跨层信息流分析
         analysis_results['cross_layer_flow'] = self._analyze_cross_layer_flow(hyper_network_data)
+
+        # 5. Shapley 值重心分析（新增）
+        print("\n5. Shapley 值重心分析...")
+        try:
+            shapley_results = self.shapley_analyzer.analyze_hyper_network(hyper_network_data)
+            analysis_results['shapley_gravity'] = shapley_results
+            gravity = shapley_results.get('gravity_analysis', {})
+            print(f"   超网重心节点（Shapley）: {gravity.get('gravity_node', 'N/A')} "
+                  f"(分数={gravity.get('gravity_score', 0):.4f}, "
+                  f"稳定性={gravity.get('stability', 'N/A')})")
+        except Exception as e:
+            print(f"   Shapley 分析失败: {e}")
+            import traceback; traceback.print_exc()
+            analysis_results['shapley_gravity'] = {}
+
+        # 6. 级联失效模拟（新增）
+        print("\n6. 级联失效模拟（关键前10节点随机移除）...")
+        try:
+            # 综合关键节点列表：优先用 Shapley 排名，回退到跨层中心性
+            shapley_gravity = analysis_results.get('shapley_gravity', {})
+            combined_sv = shapley_gravity.get('combined_shapley', {})
+            cross_centrality = analysis_results.get('cross_layer_centrality', {})
+
+            if combined_sv:
+                critical_nodes = [n for n, _ in sorted(combined_sv.items(), key=lambda x: x[1], reverse=True)]
+            else:
+                critical_nodes = list(cross_centrality.keys())
+
+            cascade_result = self.cascade_simulator.simulate_hyper_network(
+                hyper_network_data, critical_nodes, top_k=10
+            )
+            analysis_results['cascade_failure'] = cascade_result
+
+            # 生成 Markdown 报告
+            md_report = self.cascade_simulator.generate_markdown_report(
+                cascade_result,
+                shapley_results=shapley_gravity,
+                network_name="作战超网"
+            )
+            analysis_results['cascade_report_md'] = md_report
+
+            # 保存报告到文件
+            report_path = os.path.join(_ROOT_DIR, 'outputs', 'reports', 'cascade_failure_report.md')
+            os.makedirs(os.path.dirname(report_path), exist_ok=True)
+            with open(report_path, 'w', encoding='utf-8') as f:
+                f.write(md_report)
+            print(f"   级联失效报告已保存: {report_path}")
+
+        except Exception as e:
+            print(f"   级联失效模拟失败: {e}")
+            import traceback; traceback.print_exc()
+            analysis_results['cascade_failure'] = {}
+            analysis_results['cascade_report_md'] = ""
 
         return analysis_results
 
