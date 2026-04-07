@@ -1,0 +1,40 @@
+# ── macOS ──────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── Python ─────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ── Node / Vue ─────────────────────────────────────
+node_modules/
+dist/
+.vite/
+
+# ── 运行时生成产物（每次分析自动重新生成）──────────
+hyper-viz/public/frames/
+hyper-viz/public/*.mp4
+hyper-viz/public/*.gif
+hyper-viz/public/*.png
+hyper-viz/public/*.md
+hyper-viz/public/reports/
+
+# outputs 目录（本地调试产物）
+qky项目文件/outputs/
+
+# ── 数据文件（不入库，部署时单独提供）─────────────
+*.csv
+*.xlsx
+*.xls
+
+# ── 日志 ───────────────────────────────────────────
+*.log
+nohup.out
