@@ -42,10 +42,11 @@ class ShapelyGravityAnalyzer:
     # 公开接口
     # ─────────────────────────────────────────────
 
-    def analyze_single_network(self, G: nx.Graph) -> Dict[str, Any]:
+    def analyze_single_network(self, G: nx.Graph, top_n: int = 10) -> Dict[str, Any]:
         """
         对单层网络计算 Shapley 重心分析
-        :param G: NetworkX 图（有向/无向均可）
+        :param G:     NetworkX 图（有向/无向均可）
+        :param top_n: 返回排名前 N 个关键节点（0 = 全部）
         :return: 分析结果字典
         """
         if G.number_of_nodes() == 0:
@@ -59,12 +60,22 @@ class ShapelyGravityAnalyzer:
         nodes = list(G_undirected.nodes())
         shapley_values = self._compute_shapley_values(G_undirected, nodes)
 
-        return self._build_result(shapley_values, G_undirected, layer_name="single")
+        return self._build_result(shapley_values, G_undirected, layer_name="single", top_n=top_n)
 
-    def analyze_hyper_network(self, hyper_data: Dict[str, Any]) -> Dict[str, Any]:
+    def analyze_hyper_network(self, hyper_data: Dict[str, Any],
+                               degree_weight: float = 0.4,
+                               shapley_weight: float = 0.6,
+                               shapley_base_weight: float = 0.7,
+                               bridge_bonus_weight: float = 0.3,
+                               top_n: int = 10) -> Dict[str, Any]:
         """
         对超网（多层网络）计算跨层 Shapley 重心分析
         :param hyper_data: CombatHyperNetworkBuilder.build_hyper_network() 的返回值
+        :param degree_weight:       度中心性在融合分数中的权重（默认 0.4）
+        :param shapley_weight:      Shapley 值在融合分数中的权重（默认 0.6）
+        :param shapley_base_weight: 基础 Shapley 在桥梁修正中的保留比例（默认 0.7）
+        :param bridge_bonus_weight: 跨层桥梁加分的融合比例（默认 0.3）
+        :param top_n:               返回排名前 N 个关键节点（0 = 全部）
         :return: 分析结果字典
         """
         layers = hyper_data.get('layers', {})
@@ -103,7 +114,7 @@ class ShapelyGravityAnalyzer:
         for node in all_nodes:
             base  = cross_shapley.get(node, 0.0)
             bonus = bridge_bonus.get(node, 0.0)
-            shapley_with_bridge[node] = base * 0.7 + bonus * 0.3
+            shapley_with_bridge[node] = base * shapley_base_weight + bonus * bridge_bonus_weight
         shapley_with_bridge = self._normalize(shapley_with_bridge)
         results['cross_layer_shapley_norm'] = shapley_with_bridge
 
@@ -113,20 +124,19 @@ class ShapelyGravityAnalyzer:
         degree_norm = {n: deg.get(n, 0) / max_deg for n in all_nodes}
         results['degree_centrality_norm'] = degree_norm
 
-        # 5. 加权融合：degree * 0.4 + shapley * 0.6 → 最终重心分数
-        #    度中心性是经典基础指标，Shapley 是高级协同贡献指标，各有侧重
+        # 5. 加权融合：degree * degree_weight + shapley * shapley_weight → 最终重心分数
         combined_shapley = {}
         for node in all_nodes:
             d_score = degree_norm.get(node, 0.0)
             s_score = shapley_with_bridge.get(node, 0.0)
-            combined_shapley[node] = d_score * 0.4 + s_score * 0.6
+            combined_shapley[node] = d_score * degree_weight + s_score * shapley_weight
 
         # 归一化
         combined_shapley = self._normalize(combined_shapley)
         results['combined_shapley'] = combined_shapley
 
         # 6. 重心识别（基于融合分数）
-        results['gravity_analysis'] = self._build_result(combined_shapley, hyper_simple, layer_name="hyper")
+        results['gravity_analysis'] = self._build_result(combined_shapley, hyper_simple, layer_name="hyper", top_n=top_n)
 
         # 5. 层级重要性排名
         results['layer_importance'] = self._rank_layer_importance(layer_shapley)
@@ -246,8 +256,12 @@ class ShapelyGravityAnalyzer:
         return {k: (v - mn) / (mx - mn) for k, v in d.items()}
 
     def _build_result(self, shapley_values: Dict[str, float],
-                      G: nx.Graph, layer_name: str) -> Dict[str, Any]:
-        """构建标准化的分析结果"""
+                      G: nx.Graph, layer_name: str,
+                      top_n: int = 10) -> Dict[str, Any]:
+        """构建标准化的分析结果
+
+        :param top_n: 返回前 N 个关键节点；0 表示返回全部节点
+        """
         if not shapley_values:
             return {}
 
@@ -256,7 +270,10 @@ class ShapelyGravityAnalyzer:
         gravity_node = sorted_nodes[0][0]
         gravity_score = sorted_nodes[0][1]
 
-        top10 = sorted_nodes[:10]
+        # top_n=0 表示全部；否则取前 top_n 个
+        actual_n = len(sorted_nodes) if top_n <= 0 else min(top_n, len(sorted_nodes))
+        topn_nodes = sorted_nodes[:actual_n]
+
         top10_pct = max(1, len(sorted_nodes) // 10)
         gravity_region = [n for n, _ in sorted_nodes[:top10_pct]]
 
@@ -272,7 +289,9 @@ class ShapelyGravityAnalyzer:
             'layer': layer_name,
             'gravity_node': gravity_node,
             'gravity_score': gravity_score,
-            'top10_nodes': top10,
+            'top10_nodes': topn_nodes,   # 保持旧键名，向后兼容
+            'topn_nodes':  topn_nodes,   # 新键名
+            'top_n_actual': actual_n,    # 实际展示数量
             'gravity_region': gravity_region,
             'stability': stability,
             'score_gap': gap,

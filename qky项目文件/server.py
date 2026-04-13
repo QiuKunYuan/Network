@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-server.py — AFSIM 超网分析后端服务
+server.py — 超网分析后端服务
 ====================================
 提供 REST API：
   POST /api/upload      上传 CSV，触发分析流程（异步）
@@ -64,6 +64,39 @@ _state_lock = threading.Lock()
 _analysis_thread = None
 _cancel_flag = threading.Event()
 
+# ── 全局可调参数（前端配置页写入，分析时读取）────────────────────────────────
+_config = {
+    # ── Shapley 分析 ──────────────────────────────────────────
+    'shapley_samples':        150,    # 蒙特卡洛采样次数（越大越精确，越慢）
+    'cascade_rounds':         20,     # 级联失效 Monte Carlo 轮数
+    # ── 重心融合权重（degree_w + shapley_w 应 = 1.0）─────────
+    'degree_weight':          0.4,    # 度中心性权重
+    'shapley_weight':         0.6,    # Shapley 值权重
+    # ── 桥梁加分融合（shapley_base_w + bridge_w 应 = 1.0）────
+    'shapley_base_weight':    0.7,    # 基础 Shapley 保留比例
+    'bridge_bonus_weight':    0.3,    # 跨层桥梁加分比例
+    # ── 逐帧动态融合（global_w + frame_deg_w 应 = 1.0）───────
+    'frame_global_weight':    0.5,    # 全局 Shapley 在帧融合中的权重
+    'frame_degree_weight':    0.5,    # 当前帧度数在帧融合中的权重
+    # ── 视频帧生成 ────────────────────────────────────────────
+    'n_frames':               60,     # 生成帧总数
+    'video_fps':              2,      # 视频帧率（fps）
+    'video_crf':              18,     # 视频质量（0=无损，51=最差，18=高质量）
+    'azim_start':             35,     # 3D 旋转起始方位角（度）
+    # ── 时间窗口 ──────────────────────────────────────────────
+    'time_window_override':   0,      # 手动指定时间窗口大小（秒），0=自动
+    # ── 复杂网络图 ────────────────────────────────────────────
+    'cn_betweenness_k':       100,    # 介数中心性采样节点数（越大越精确）
+    'cn_top_n':               10,     # 中心性排名展示 Top-N（兼容旧字段）
+    # ── 关键节点展示模式 ──────────────────────────────────────
+    'top_n_mode':             'abs',  # 展示模式：abs=固定数量 / pct=百分比 / all=全部
+    'top_n_abs':              10,     # 固定数量模式：展示前 N 个节点
+    'top_n_pct':              10,     # 百分比模式：展示前 N% 节点
+    # ── 级联失效崩溃阈值 ──────────────────────────────────────
+    'collapse_threshold_pct': 50.0,   # 效率下降超过此百分比视为网络崩溃
+}
+_config_lock = threading.Lock()
+
 
 def _log(msg: str):
     """线程安全地追加日志"""
@@ -114,7 +147,7 @@ def _run_analysis(csv_path: str):
 
         # ── Step 1: 加载数据 ──────────────────────────────────────────
         _set_state(progress=5, stage='加载 CSV 数据')
-        _log('[Step 1] 加载 AFSIM 仿真数据...')
+        _log('[Step 1] 加载仿真数据...')
         processor = AFSIMDataProcessor(csv_path)
         info = processor.get_data_info()
         _log(f'  数据行数: {info["total_rows"]}  平台数: {info["platforms_count"]}')
@@ -136,16 +169,49 @@ def _run_analysis(csv_path: str):
             _set_state(status='idle', stage='已取消'); return
 
         # ── Step 3: Shapley + 级联失效分析 ───────────────────────────
+        # ── 读取当前配置快照（分析期间不受前端修改影响）────────────
+        with _config_lock:
+            cfg = dict(_config)
+
         _set_state(progress=30, stage='Shapley 重心分析 + 级联失效模拟')
         _log('[Step 3] 超网分析（Shapley + 级联失效）...')
-        analyzer = HyperNetworkAnalyzer(shapley_samples=150, cascade_rounds=20)
-        analysis = analyzer.analyze_hyper_network(hyper_data)
+        _log(f'  配置: shapley_samples={cfg["shapley_samples"]}  cascade_rounds={cfg["cascade_rounds"]}')
+        analyzer = HyperNetworkAnalyzer(
+            shapley_samples=cfg['shapley_samples'],
+            cascade_rounds=cfg['cascade_rounds'],
+        )
+        # 计算 Shapley top_n：与复杂网络中心性使用相同的展示模式
+        _mode = cfg.get('top_n_mode', 'abs')
+        if _mode == 'all':
+            _shapley_top_n = 0          # 0 = 全部
+        elif _mode == 'pct':
+            # 超网节点数尚未知，先用 abs 占位；_build_result 内部会截断到实际节点数
+            _shapley_top_n = cfg.get('top_n_abs', 10)
+        else:
+            _shapley_top_n = cfg.get('top_n_abs', cfg.get('cn_top_n', 10))
+        analysis = analyzer.analyze_hyper_network(
+            hyper_data,
+            degree_weight=cfg['degree_weight'],
+            shapley_weight=cfg['shapley_weight'],
+            shapley_base_weight=cfg['shapley_base_weight'],
+            bridge_bonus_weight=cfg['bridge_bonus_weight'],
+            top_n=_shapley_top_n,
+        )
 
         gravity_node = None
         shapley_scores_dict = None
         shapley_gravity = analysis.get('shapley_gravity', {})
         gravity_info = shapley_gravity.get('gravity_analysis', {})
         if gravity_info:
+            # pct 模式：现在知道超网节点数了，重新截断 topn_nodes
+            if cfg.get('top_n_mode', 'abs') == 'pct':
+                _all_sv = gravity_info.get('all_shapley_values', {})
+                _n_hyper = len(_all_sv) if _all_sv else H.number_of_nodes()
+                _pct_n = max(1, int(_n_hyper * cfg.get('top_n_pct', 10) / 100))
+                _sorted_sv = sorted(_all_sv.items(), key=lambda x: x[1], reverse=True)
+                gravity_info['top10_nodes'] = _sorted_sv[:_pct_n]
+                gravity_info['topn_nodes']  = _sorted_sv[:_pct_n]
+                gravity_info['top_n_actual'] = _pct_n
             gravity_node = gravity_info.get('gravity_node')
             _log(f'  🌟 重心节点: {gravity_node}  分数: {gravity_info.get("gravity_score", 0):.4f}')
             # 优先使用 combined_shapley（度+Shapley 融合分数）作为条形图数据
@@ -172,7 +238,7 @@ def _run_analysis(csv_path: str):
         _set_state(progress=40, stage='生成 3D 旋转动画帧')
         _log('[Step 4] 生成视频帧序列...')
 
-        N_FRAMES = 60
+        N_FRAMES = cfg['n_frames']
         frames_dir = _VUE_PUBLIC / 'frames'
         frames_dir.mkdir(exist_ok=True)
 
@@ -186,7 +252,11 @@ def _run_analysis(csv_path: str):
         time_col = processor._col.get('time') or processor.df.columns[0]
         t_min = float(processor.df[time_col].min())
         t_max = float(processor.df[time_col].max())
-        step = max(1.0, (t_max - t_min) / N_FRAMES)
+        # 时间窗口：手动指定或自动计算
+        if cfg['time_window_override'] > 0:
+            step = float(cfg['time_window_override'])
+        else:
+            step = max(1.0, (t_max - t_min) / N_FRAMES)
         windows = processor.get_time_windows(window_size=step, step=step)
         if len(windows) > N_FRAMES:
             indices = np.linspace(0, len(windows) - 1, N_FRAMES, dtype=int)
@@ -218,8 +288,10 @@ def _run_analysis(csv_path: str):
 
         # 渲染帧
         frame_paths = []
-        azim_start = 35
+        azim_start = cfg['azim_start']
         azim_step = 360.0 / max(total_frames, 1)
+        _fw_global = cfg['frame_global_weight']
+        _fw_degree = cfg['frame_degree_weight']
         for frame_idx, (t_start, t_end, G_snap) in enumerate(frame_graphs):
             if _cancel_flag.is_set():
                 _set_state(status='idle', stage='已取消'); return
@@ -229,22 +301,19 @@ def _run_analysis(csv_path: str):
             snap_data = dict(hyper_data)
             snap_data['hyper_network'] = G_snap
 
-            # ── 方案A：逐帧动态 Shapley 近似 ──────────────────────────────
-            # 用该帧快照的度数归一化，与全局 Shapley 加权融合
-            # 公式：frame_score = global_shapley * 0.5 + frame_degree_norm * 0.5
-            # 这样既保留全局战略价值，又反映当前帧的实时活跃度变化
+            # ── 逐帧动态 Shapley 近似 ──────────────────────────────────────
+            # 公式：frame_score = global_shapley * frame_global_weight + frame_degree_norm * frame_degree_weight
             frame_deg = dict(G_snap.degree())
             max_frame_deg = max(frame_deg.values()) if frame_deg else 1
             frame_deg_norm = {n: v / max_frame_deg for n, v in frame_deg.items()}
 
             if shapley_scores_dict:
-                # 融合：全局 Shapley(0.5) + 当前帧度数(0.5)
                 dynamic_scores = {}
                 all_nodes_snap = set(frame_deg.keys()) | set(shapley_scores_dict.keys())
                 for n in all_nodes_snap:
                     g_s = shapley_scores_dict.get(n, 0.0)
                     d_s = frame_deg_norm.get(n, 0.0)
-                    dynamic_scores[n] = g_s * 0.5 + d_s * 0.5
+                    dynamic_scores[n] = g_s * _fw_global + d_s * _fw_degree
                 # 归一化到 [0,1]
                 max_ds = max(dynamic_scores.values()) if dynamic_scores else 1
                 min_ds = min(dynamic_scores.values()) if dynamic_scores else 0
@@ -285,10 +354,10 @@ def _run_analysis(csv_path: str):
         if os.path.exists(ffmpeg_bin):
             cmd = [
                 ffmpeg_bin, '-y',
-                '-framerate', '2',
+                '-framerate', str(cfg['video_fps']),
                 '-i', str(frames_dir / 'frame_%04d.png'),
                 '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-                '-vcodec', 'libx264', '-crf', '18', '-preset', 'fast',
+                '-vcodec', 'libx264', '-crf', str(cfg['video_crf']), '-preset', 'fast',
                 '-pix_fmt', 'yuv420p',
                 str(mp4_path)
             ]
@@ -309,7 +378,7 @@ def _run_analysis(csv_path: str):
         _log('[Step 6] 生成综合复杂网络图...')
         cn_metrics = {}
         try:
-            cn_metrics = _generate_complex_network(processor, hyper_data, _VUE_PUBLIC / 'complex_network.png') or {}
+            cn_metrics = _generate_complex_network(processor, hyper_data, _VUE_PUBLIC / 'complex_network.png', cfg=cfg) or {}
             _log('  ✅ 复杂网络图已生成')
         except Exception as e:
             _log(f'  ⚠️ 复杂网络图生成失败: {e}')
@@ -361,8 +430,10 @@ def _run_analysis(csv_path: str):
         _set_state(status='error', error=str(e), stage='分析失败')
 
 
-def _generate_complex_network(processor, hyper_data, out_path: Path) -> dict:
+def _generate_complex_network(processor, hyper_data, out_path: Path, cfg: dict = None) -> dict:
     """生成综合复杂网络双视图（Spring + Kamada-Kawai），返回网络指标字典"""
+    if cfg is None:
+        cfg = _config
     import networkx as nx
     import matplotlib
     matplotlib.use('Agg')
@@ -463,15 +534,24 @@ def _generate_complex_network(processor, hyper_data, out_path: Path) -> dict:
                                if nx.is_connected(Gc) and Gc.number_of_nodes() < 500
                                else None)
 
-        # 中心性 Top-10
+        # 中心性 Top-N（根据展示模式动态计算）
+        _bet_k  = min(cfg.get('cn_betweenness_k', 100), G.number_of_nodes())
+        _n_nodes = G.number_of_nodes()
+        _mode   = cfg.get('top_n_mode', 'abs')
+        if _mode == 'all':
+            _top_n = _n_nodes
+        elif _mode == 'pct':
+            _top_n = max(1, int(_n_nodes * cfg.get('top_n_pct', 10) / 100))
+        else:  # abs
+            _top_n = cfg.get('top_n_abs', cfg.get('cn_top_n', 10))
         deg_cent = nx.degree_centrality(G)
-        bet_cent = nx.betweenness_centrality(G, normalized=True,
-                                             k=min(100, G.number_of_nodes()))
+        bet_cent = nx.betweenness_centrality(G, normalized=True, k=_bet_k)
         close_cent = nx.closeness_centrality(Gc)
 
-        metrics['top_degree'] = sorted(deg_cent.items(), key=lambda x: x[1], reverse=True)[:10]
-        metrics['top_betweenness'] = sorted(bet_cent.items(), key=lambda x: x[1], reverse=True)[:10]
-        metrics['top_closeness'] = sorted(close_cent.items(), key=lambda x: x[1], reverse=True)[:10]
+        metrics['top_degree']      = sorted(deg_cent.items(),   key=lambda x: x[1], reverse=True)[:_top_n]
+        metrics['top_betweenness'] = sorted(bet_cent.items(),   key=lambda x: x[1], reverse=True)[:_top_n]
+        metrics['top_closeness']   = sorted(close_cent.items(), key=lambda x: x[1], reverse=True)[:_top_n]
+        metrics['top_n_actual']    = _top_n  # 记录实际展示数量，供报告使用
 
         # 节点类型分布
         type_count = {'radar_sensor': 0, 'ew_soj': 0, 'command': 0, 'weapon': 0, 'other': 0}
@@ -522,13 +602,13 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
     hyper_result = cascade.get('hyper_result', {})
 
     # ── 综合报告 ──────────────────────────────────────────────────
-    report = f"# AFSIM 作战超网综合分析报告\n\n"
+    report = f"# 超网分析系统 综合分析报告\n\n"
     report += f"> 生成时间：{now}  \n"
     report += f"> 数据文件：`{os.path.basename(csv_path)}`  \n"
     report += f"> 分析方法：多层超网 + Shapley 值重心分析 + Monte Carlo 级联失效模拟\n\n---\n\n"
 
     report += "## 1. 数据概况\n\n"
-    report += (f"本次分析使用 AFSIM 仿真数据，共 **{info.get('total_rows', 0):,}** 行记录，"
+    report += (f"本次分析共 **{info.get('total_rows', 0):,}** 行记录，"
                f"**{info.get('total_columns', 0)}** 列，"
                f"涉及 **{info.get('platforms_count', 0)}** 个作战平台，"
                f"**{len(info.get('message_types', {}))}** 种消息类型。\n\n")
@@ -562,10 +642,11 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
                    f"**Shapley 分数**：{gravity_info.get('gravity_score', 0):.4f}  \n"
                    f"**稳定性**：{gravity_info.get('stability', 'N/A')}  \n"
                    f"**分数差距**：{gravity_info.get('score_gap', 0):.4f}\n\n")
-        top10 = gravity_info.get('top10_nodes', [])
-        if top10:
-            report += "**Top-10 关键节点（Shapley + 中心性融合排名）**\n\n| 排名 | 节点 | 融合分数 |\n|------|------|----------|\n"
-            for i, (node, score) in enumerate(top10, 1):
+        topn = gravity_info.get('top10_nodes', [])
+        _stn = gravity_info.get('top_n_actual', len(topn))
+        if topn:
+            report += f"**Top-{_stn} 关键节点（Shapley + 中心性融合排名）**\n\n| 排名 | 节点 | 融合分数 |\n|------|------|----------|\n"
+            for i, (node, score) in enumerate(topn, 1):
                 report += f"| {i} | `{node}` | {score:.4f} |\n"
             report += "\n"
 
@@ -588,8 +669,10 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
             report += f"✅ 移除全部 {len(target_nodes)} 个关键节点后，网络效率下降未超过 50%（韧性较强）\n\n"
         report += f"移除全部关键节点后：平均效率下降 **{final_drop:.1f}%**，LCC 缩减 **{summary.get('final_lcc_drop', 0):.1f}%**\n\n"
     if single:
-        report += "**关键节点单独移除影响（Top-10）**\n\n| 排名 | 节点 | 效率下降% | LCC缩减% | 连通分量增加 |\n|------|------|-----------|----------|-------------|\n"
-        for i, item in enumerate(single[:10], 1):
+        # 展示数量与 Shapley 保持一致
+        _sn_single = gravity_info.get('top_n_actual', 10) if gravity_info else 10
+        report += f"**关键节点单独移除影响（Top-{_sn_single}）**\n\n| 排名 | 节点 | 效率下降% | LCC缩减% | 连通分量增加 |\n|------|------|-----------|----------|-------------|\n"
+        for i, item in enumerate(single[:_sn_single], 1):
             report += (f"| {i} | `{item['node']}` | "
                        f"{item['efficiency_drop_pct']:.1f}% | "
                        f"{item['lcc_drop_pct']:.1f}% | "
@@ -667,18 +750,19 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
         top_deg = cn_metrics.get('top_degree', [])
         top_bet = cn_metrics.get('top_betweenness', [])
         top_clo = cn_metrics.get('top_closeness', [])
+        _tn = cn_metrics.get('top_n_actual', len(top_deg))
         if top_deg:
-            report += "**度中心性 Top-10**\n\n| 排名 | 节点 | 度中心性 |\n|------|------|----------|\n"
+            report += f"**度中心性 Top-{_tn}**\n\n| 排名 | 节点 | 度中心性 |\n|------|------|----------|\n"
             for i, (n, v) in enumerate(top_deg, 1):
                 report += f"| {i} | `{n}` | {v:.4f} |\n"
             report += "\n"
         if top_bet:
-            report += '**介数中心性 Top-10**（衡量节点作为「桥梁」的能力）\n\n| 排名 | 节点 | 介数中心性 |\n|------|------|------------|\n'
+            report += f'**介数中心性 Top-{_tn}**（衡量节点作为「桥梁」的能力）\n\n| 排名 | 节点 | 介数中心性 |\n|------|------|------------|\n'
             for i, (n, v) in enumerate(top_bet, 1):
                 report += f"| {i} | `{n}` | {v:.4f} |\n"
             report += "\n"
         if top_clo:
-            report += "**接近中心性 Top-10**（衡量节点到达其他节点的效率）\n\n| 排名 | 节点 | 接近中心性 |\n|------|------|------------|\n"
+            report += f"**接近中心性 Top-{_tn}**（衡量节点到达其他节点的效率）\n\n| 排名 | 节点 | 接近中心性 |\n|------|------|------------|\n"
             for i, (n, v) in enumerate(top_clo, 1):
                 report += f"| {i} | `{n}` | {v:.4f} |\n"
             report += "\n"
@@ -755,22 +839,23 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
         top_deg = cn_metrics.get('top_degree', [])
         top_bet = cn_metrics.get('top_betweenness', [])
         top_clo = cn_metrics.get('top_closeness', [])
+        _tn = cn_metrics.get('top_n_actual', len(top_deg))
 
         cn_report += "## 3. 中心性分析\n\n"
         if top_deg:
-            cn_report += "### 3.1 度中心性 Top-10\n\n度中心性反映节点的直接连接数量，值越高说明该节点与越多其他节点直接相连。\n\n"
+            cn_report += f"### 3.1 度中心性 Top-{_tn}\n\n度中心性反映节点的直接连接数量，值越高说明该节点与越多其他节点直接相连。\n\n"
             cn_report += "| 排名 | 节点 | 度中心性 |\n|------|------|----------|\n"
             for i, (n, v) in enumerate(top_deg, 1):
                 cn_report += f"| {i} | `{n}` | {v:.4f} |\n"
             cn_report += "\n"
         if top_bet:
-            cn_report += '### 3.2 介数中心性 Top-10\n\n介数中心性衡量节点作为网络「桥梁」的能力，高介数节点一旦失效会导致大量路径中断。\n\n'
+            cn_report += f'### 3.2 介数中心性 Top-{_tn}\n\n介数中心性衡量节点作为网络「桥梁」的能力，高介数节点一旦失效会导致大量路径中断。\n\n'
             cn_report += "| 排名 | 节点 | 介数中心性 |\n|------|------|------------|\n"
             for i, (n, v) in enumerate(top_bet, 1):
                 cn_report += f"| {i} | `{n}` | {v:.4f} |\n"
             cn_report += "\n"
         if top_clo:
-            cn_report += "### 3.3 接近中心性 Top-10\n\n接近中心性衡量节点到达网络中所有其他节点的平均效率，值越高说明信息传播越快。\n\n"
+            cn_report += f"### 3.3 接近中心性 Top-{_tn}\n\n接近中心性衡量节点到达网络中所有其他节点的平均效率，值越高说明信息传播越快。\n\n"
             cn_report += "| 排名 | 节点 | 接近中心性 |\n|------|------|------------|\n"
             for i, (n, v) in enumerate(top_clo, 1):
                 cn_report += f"| {i} | `{n}` | {v:.4f} |\n"
@@ -864,6 +949,10 @@ class APIHandler(BaseHTTPRequestHandler):
             with _state_lock:
                 self._send_json({'log': _state['log']})
 
+        elif path == '/api/config':
+            with _config_lock:
+                self._send_json(dict(_config))
+
         else:
             self._send_json({'error': 'Not found'}, 404)
 
@@ -877,8 +966,65 @@ class APIHandler(BaseHTTPRequestHandler):
             _cancel_flag.set()
             _set_state(status='idle', stage='已取消', progress=0)
             self._send_json({'ok': True, 'message': '已取消分析'})
+        elif path == '/api/config':
+            self._handle_config()
         else:
             self._send_json({'error': 'Not found'}, 404)
+
+    def _handle_config(self):
+        """POST /api/config — 更新可调参数"""
+        content_length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(content_length)
+        try:
+            new_cfg = json.loads(body.decode('utf-8'))
+        except Exception as e:
+            self._send_json({'ok': False, 'error': f'JSON 解析失败: {e}'}, 400)
+            return
+
+        # 类型校验 + 写入（只更新已知 key，防止注入）
+        _NUM_KEYS = {
+            'shapley_samples': int,
+            'cascade_rounds': int,
+            'degree_weight': float,
+            'shapley_weight': float,
+            'shapley_base_weight': float,
+            'bridge_bonus_weight': float,
+            'frame_global_weight': float,
+            'frame_degree_weight': float,
+            'n_frames': int,
+            'video_fps': int,
+            'video_crf': int,
+            'azim_start': float,
+            'time_window_override': float,
+            'cn_betweenness_k': int,
+            'cn_top_n': int,
+            'top_n_abs': int,
+            'top_n_pct': int,
+            'collapse_threshold_pct': float,
+        }
+        _STR_KEYS = {'top_n_mode'}   # 合法值：abs / pct / all
+        updated = {}
+        errors = []
+        with _config_lock:
+            for k, typ in _NUM_KEYS.items():
+                if k in new_cfg:
+                    try:
+                        _config[k] = typ(new_cfg[k])
+                        updated[k] = _config[k]
+                    except (ValueError, TypeError) as e:
+                        errors.append(f'{k}: {e}')
+            for k in _STR_KEYS:
+                if k in new_cfg:
+                    v = str(new_cfg[k])
+                    if k == 'top_n_mode' and v not in ('abs', 'pct', 'all'):
+                        errors.append(f'{k}: 非法值 {v!r}，必须为 abs/pct/all')
+                    else:
+                        _config[k] = v
+                        updated[k] = v
+        if errors:
+            self._send_json({'ok': False, 'error': '; '.join(errors)}, 400)
+        else:
+            self._send_json({'ok': True, 'updated': updated, 'config': dict(_config)})
 
     def _handle_upload(self):
         global _analysis_thread
@@ -967,12 +1113,12 @@ class APIHandler(BaseHTTPRequestHandler):
 # ── 主入口 ────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description='AFSIM 超网分析后端服务')
+    parser = argparse.ArgumentParser(description='超网分析后端服务')
     parser.add_argument('--port', type=int, default=5001, help='监听端口（默认 5001）')
     parser.add_argument('--host', default='127.0.0.1', help='监听地址（默认 127.0.0.1）')
     args = parser.parse_args()
 
-    print(f"🚀 AFSIM 分析后端服务启动")
+    print(f"🚀 超网分析后端服务启动")
     print(f"   监听: http://{args.host}:{args.port}")
     print(f"   项目目录: {_PROJECT_DIR}")
     print(f"   Vue public: {_VUE_PUBLIC}")

@@ -26,8 +26,16 @@ class HyperNetworkAnalyzer:
         self.shapley_analyzer = ShapelyGravityAnalyzer(n_samples=shapley_samples)
         self.cascade_simulator = CascadeFailureSimulator(n_rounds=cascade_rounds)
 
-    def analyze_hyper_network(self, hyper_network_data: Dict[str, Any]) -> Dict[str, Any]:
-        """分析超网结构（含 Shapley 重心分析 + 级联失效模拟）"""
+    def analyze_hyper_network(self, hyper_network_data: Dict[str, Any],
+                               degree_weight: float = 0.4,
+                               shapley_weight: float = 0.6,
+                               shapley_base_weight: float = 0.7,
+                               bridge_bonus_weight: float = 0.3,
+                               top_n: int = 10) -> Dict[str, Any]:
+        """分析超网结构（含 Shapley 重心分析 + 级联失效模拟）
+
+        :param top_n: Shapley 排名展示前 N 个节点（0 = 全部）
+        """
         print("开始超网分析...")
 
         analysis_results = {}
@@ -47,7 +55,14 @@ class HyperNetworkAnalyzer:
         # 5. Shapley 值重心分析（新增）
         print("\n5. Shapley 值重心分析...")
         try:
-            shapley_results = self.shapley_analyzer.analyze_hyper_network(hyper_network_data)
+            shapley_results = self.shapley_analyzer.analyze_hyper_network(
+                hyper_network_data,
+                degree_weight=degree_weight,
+                shapley_weight=shapley_weight,
+                shapley_base_weight=shapley_base_weight,
+                bridge_bonus_weight=bridge_bonus_weight,
+                top_n=top_n,
+            )
             analysis_results['shapley_gravity'] = shapley_results
             gravity = shapley_results.get('gravity_analysis', {})
             print(f"   超网重心节点（Shapley）: {gravity.get('gravity_node', 'N/A')} "
