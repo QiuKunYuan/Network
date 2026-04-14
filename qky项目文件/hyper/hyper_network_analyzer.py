@@ -150,8 +150,10 @@ class HyperNetworkAnalyzer:
                 # 计算该节点在该层的度中心性
                 if layer_net.number_of_nodes() > 0:
                     degree = layer_net.degree(node)
-                    max_degree = max(dict(layer_net.degree()).values())
-                    layer_score = degree / max_degree if max_degree > 0 else 0
+                    _all_degs = dict(layer_net.degree()).values()
+                    max_degree = max(_all_degs) if _all_degs else 0
+                    max_degree = max_degree or 1
+                    layer_score = degree / max_degree
                     scores.append(layer_score)
 
         return np.mean(scores) if scores else 0.0

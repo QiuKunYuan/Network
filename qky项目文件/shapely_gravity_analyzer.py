@@ -120,7 +120,8 @@ class ShapelyGravityAnalyzer:
 
         # 4. 度中心性归一化
         deg = dict(hyper_simple.degree())
-        max_deg = max(deg.values()) if deg else 1
+        max_deg = max(deg.values()) if deg else 0
+        max_deg = max_deg or 1   # 防止所有节点度数为 0 时除零
         degree_norm = {n: deg.get(n, 0) / max_deg for n in all_nodes}
         results['degree_centrality_norm'] = degree_norm
 

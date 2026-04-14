@@ -27,6 +27,9 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 import io
+import zipfile
+import tempfile
+from typing import Optional
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────────
 _THIS_DIR   = Path(__file__).parent.resolve()
@@ -112,6 +115,94 @@ def _set_state(**kwargs):
         _state.update(kwargs)
 
 
+# ── 上传数据路径解析辅助函数 ──────────────────────────────────────────────────
+
+# 全局临时目录（进程生命周期内保留，避免重复解压）
+_upload_tmp_dir: Optional[str] = None
+
+
+def _resolve_upload(csv_data: bytes, csv_name: str) -> str:
+    """
+    将上传的原始字节保存到磁盘，返回数据目录路径（str）。
+
+    支持两种上传格式：
+      1. ZIP 包（csv_name 以 .zip 结尾）→ 解压到临时目录，返回目录路径
+      2. 单个 CSV 文件 → 写入 uploaded_data/ 子目录，返回该目录路径
+    """
+    global _upload_tmp_dir
+
+    # 清理上次的临时目录
+    if _upload_tmp_dir and os.path.isdir(_upload_tmp_dir):
+        try:
+            shutil.rmtree(_upload_tmp_dir)
+        except Exception:
+            pass
+
+    _upload_tmp_dir = tempfile.mkdtemp(prefix='hyper_upload_')
+
+    if csv_name.lower().endswith('.zip'):
+        # ZIP 包：解压到临时目录
+        try:
+            with zipfile.ZipFile(io.BytesIO(csv_data)) as zf:
+                zf.extractall(_upload_tmp_dir)
+            _log(f'  ZIP 解压完成: {_upload_tmp_dir}')
+        except zipfile.BadZipFile as e:
+            raise ValueError(f'ZIP 文件损坏: {e}')
+        return _upload_tmp_dir
+    else:
+        # 单个 CSV：写入临时目录
+        csv_path = os.path.join(_upload_tmp_dir, csv_name)
+        with open(csv_path, 'wb') as f:
+            f.write(csv_data)
+        return _upload_tmp_dir
+
+
+def _resolve_data_dir(path: str) -> str:
+    """
+    将传入的路径统一解析为数据目录路径。
+
+    - 如果是目录 → 直接返回
+    - 如果是 ZIP 文件 → 解压到临时目录，返回目录路径
+    - 如果是单个 CSV 文件 → 返回其父目录（兼容旧版单文件上传）
+    """
+    if os.path.isdir(path):
+        return path
+    if os.path.isfile(path):
+        if path.lower().endswith('.zip'):
+            tmp = tempfile.mkdtemp(prefix='hyper_zip_')
+            with zipfile.ZipFile(path) as zf:
+                zf.extractall(tmp)
+            return tmp
+        # 单个 CSV：返回父目录
+        return os.path.dirname(path) or '.'
+    raise FileNotFoundError(f'数据路径不存在: {path}')
+
+
+def _save_csv_files(csv_files: dict) -> str:
+    """
+    将前端上传的多个 CSV 文件（{filename: bytes}）写入临时目录，返回目录路径。
+    每次调用会清理上次的临时目录。
+    """
+    global _upload_tmp_dir
+
+    if _upload_tmp_dir and os.path.isdir(_upload_tmp_dir):
+        try:
+            shutil.rmtree(_upload_tmp_dir)
+        except Exception:
+            pass
+
+    _upload_tmp_dir = tempfile.mkdtemp(prefix='hyper_upload_')
+
+    for fname, data in csv_files.items():
+        # 只取文件名部分，防止路径穿越
+        safe_name = os.path.basename(fname)
+        with open(os.path.join(_upload_tmp_dir, safe_name), 'wb') as f:
+            f.write(data)
+
+    _log(f'  已写入 {len(csv_files)} 个 CSV 到临时目录: {_upload_tmp_dir}')
+    return _upload_tmp_dir
+
+
 # ── 分析流程（在子线程中运行）────────────────────────────────────────────────
 
 def _run_analysis(csv_path: str):
@@ -135,7 +226,7 @@ def _run_analysis(csv_path: str):
         matplotlib.use('Agg')
         import matplotlib.pyplot as plt
 
-        from data_processor import AFSIMDataProcessor
+        from data_processor import SimDataProcessor
         from hyper.hyper_network_builder import CombatHyperNetworkBuilder
         from hyper.hyper_network_analyzer import HyperNetworkAnalyzer
         from hyper.hyper_network_visualizer import HyperNetworkVisualizer
@@ -148,7 +239,9 @@ def _run_analysis(csv_path: str):
         # ── Step 1: 加载数据 ──────────────────────────────────────────
         _set_state(progress=5, stage='加载 CSV 数据')
         _log('[Step 1] 加载仿真数据...')
-        processor = AFSIMDataProcessor(csv_path)
+        # csv_path 可能是目录、ZIP 文件或单个 CSV（兼容旧版）
+        csv_dir = _resolve_data_dir(csv_path)
+        processor = SimDataProcessor(csv_dir)
         info = processor.get_data_info()
         _log(f'  数据行数: {info["total_rows"]}  平台数: {info["platforms_count"]}')
         with _state_lock:
@@ -226,7 +319,8 @@ def _run_analysis(csv_path: str):
             # 补充未在列表中的节点（用归一化度数作为默认分）
             if shapley_scores_dict is not None:
                 deg = dict(H.degree())
-                max_deg = max(deg.values()) if deg else 1
+                max_deg = max(deg.values()) if deg else 0
+                max_deg = max_deg or 1
                 for n in H.nodes():
                     if n not in shapley_scores_dict:
                         shapley_scores_dict[n] = deg.get(n, 0) / max_deg * 0.01
@@ -248,11 +342,8 @@ def _run_analysis(csv_path: str):
 
         visualizer = HyperNetworkVisualizer(figsize=(20, 11))
 
-        from data_processor import _find_col, _COL_ALIASES
-        time_col = processor._col.get('time') or processor.df.columns[0]
-        t_min = float(processor.df[time_col].min())
-        t_max = float(processor.df[time_col].max())
-        # 时间窗口：手动指定或自动计算
+        # 时间范围由 processor 统一提供，不再直接访问 df
+        t_min, t_max = processor.get_time_range()
         if cfg['time_window_override'] > 0:
             step = float(cfg['time_window_override'])
         else:
@@ -265,26 +356,20 @@ def _run_analysis(csv_path: str):
         total_frames = len(windows)
         _log(f'  实际帧数: {total_frames}  时间范围: {t_min:.0f}~{t_max:.0f}s')
 
-        # 预构建帧图
+        # 预构建帧图：直接使用 sub_processor（_SnapProcessor），无需手动 patch df
         frame_graphs = []
-        original_df = processor.df
-        original_col = processor._col
-        for t_start, t_end, df_subset in windows:
-            processor.df = df_subset
-            processor._col = {k: _find_col(df_subset, k) for k in _COL_ALIASES}
+        for t_start, t_end, sub_proc in windows:
             G_snap = nx.Graph()
             G_snap.add_nodes_from(H.nodes(data=True))
-            for src, tgt, w in processor.extract_sensor_detections():
+            for src, tgt, w in sub_proc.extract_sensor_detections():
                 G_snap.add_edge(src, tgt, color='#3498db', weight=w, type='intra')
-            for src, tgt, w in processor.extract_weapon_engagements():
+            for src, tgt, w in sub_proc.extract_weapon_engagements():
                 G_snap.add_edge(src, tgt, color='#e74c3c', weight=w, type='inter')
-            for src, tgt, w in processor.extract_jamming_relations():
+            for src, tgt, w in sub_proc.extract_jamming_relations():
                 G_snap.add_edge(src, tgt, color='#9b59b6', weight=w, type='inter')
-            for sub, cmd in processor.extract_platform_hierarchy().items():
+            for sub, cmd in sub_proc.extract_platform_hierarchy().items():
                 G_snap.add_edge(sub, cmd, color='#2ecc71', weight=0.5, type='inter')
             frame_graphs.append((t_start, t_end, G_snap))
-        processor.df = original_df
-        processor._col = original_col
 
         # 渲染帧
         frame_paths = []
@@ -304,7 +389,8 @@ def _run_analysis(csv_path: str):
             # ── 逐帧动态 Shapley 近似 ──────────────────────────────────────
             # 公式：frame_score = global_shapley * frame_global_weight + frame_degree_norm * frame_degree_weight
             frame_deg = dict(G_snap.degree())
-            max_frame_deg = max(frame_deg.values()) if frame_deg else 1
+            max_frame_deg = max(frame_deg.values()) if frame_deg else 0
+            max_frame_deg = max_frame_deg or 1   # 防止所有节点度数为 0 时除零
             frame_deg_norm = {n: v / max_frame_deg for n, v in frame_deg.items()}
 
             if shapley_scores_dict:
@@ -336,7 +422,8 @@ def _run_analysis(csv_path: str):
                 )
                 frame_paths.append(str(frame_path))
             except Exception as e:
-                _log(f'  ⚠️ 帧 {frame_idx} 渲染失败: {e}')
+                import traceback as _tb
+                _log(f'  ⚠️ 帧 {frame_idx} 渲染失败: {e} | {_tb.format_exc().splitlines()[-2]}')
                 frame_paths.append('')
 
             # 更新进度 40→75
@@ -351,11 +438,22 @@ def _run_analysis(csv_path: str):
         _log('[Step 5] 合成 MP4...')
         mp4_path = _VUE_PUBLIC / 'hyper_network_animation.mp4'
         ffmpeg_bin = shutil.which('ffmpeg') or '/opt/homebrew/bin/ffmpeg'
-        if os.path.exists(ffmpeg_bin):
+
+        # 收集实际存在的帧，重命名为连续序列，避免空洞导致 ffmpeg 失败
+        actual_frames = sorted(frames_dir.glob('frame_*.png'))
+        if actual_frames and os.path.exists(ffmpeg_bin):
+            # 重命名为连续序列 seq_0000.png ...
+            seq_dir = frames_dir / 'seq'
+            seq_dir.mkdir(exist_ok=True)
+            for old_f in seq_dir.glob('seq_*.png'):
+                old_f.unlink()
+            for i, fp in enumerate(actual_frames):
+                import shutil as _sh
+                _sh.copy2(str(fp), str(seq_dir / f'seq_{i:04d}.png'))
             cmd = [
                 ffmpeg_bin, '-y',
                 '-framerate', str(cfg['video_fps']),
-                '-i', str(frames_dir / 'frame_%04d.png'),
+                '-i', str(seq_dir / 'seq_%04d.png'),
                 '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
                 '-vcodec', 'libx264', '-crf', str(cfg['video_crf']), '-preset', 'fast',
                 '-pix_fmt', 'yuv420p',
@@ -364,9 +462,11 @@ def _run_analysis(csv_path: str):
             ret = subprocess.run(cmd, capture_output=True)
             if ret.returncode == 0 and mp4_path.exists():
                 size_mb = mp4_path.stat().st_size / 1024 / 1024
-                _log(f'  🎬 MP4 已生成: {size_mb:.2f} MB')
+                _log(f'  🎬 MP4 已生成: {size_mb:.2f} MB ({len(actual_frames)} 帧)')
             else:
-                _log(f'  ⚠️ ffmpeg 失败: {ret.stderr.decode()[:200]}')
+                _log(f'  ⚠️ ffmpeg 失败: {ret.stderr.decode()[:300]}')
+        elif not actual_frames:
+            _log(f'  ⚠️ 无可用帧，跳过 MP4 合成')
         else:
             _log(f'  ℹ️ 未找到 ffmpeg，跳过 MP4 合成')
 
@@ -445,7 +545,14 @@ def _generate_complex_network(processor, hyper_data, out_path: Path, cfg: dict =
         sys.path.insert(0, str(_PROJECT_DIR))
         from network_builder import CombatNetworkBuilder
         nb = CombatNetworkBuilder()
-        G = nb.build_network(processor)
+        nets = nb.build_multi_layer_network(processor)
+        G = nets.get('integrated', nx.Graph())
+        # integrated 为空时用各层合并
+        if G.number_of_nodes() == 0:
+            G = nx.Graph()
+            for k, v in nets.items():
+                if k != 'integrated':
+                    G = nx.compose(G, v.to_undirected() if v.is_directed() else v)
     except Exception:
         # fallback：直接从 hyper_data 构建
         G = hyper_data.get('hyper_network', nx.Graph())
@@ -459,13 +566,33 @@ def _generate_complex_network(processor, hyper_data, out_path: Path, cfg: dict =
     if G.is_multigraph():
         G = nx.Graph(G)  # MultiGraph → 普通 Graph（合并多重边）
 
-    # 节点颜色
+    # 节点颜色：复用 CombatHyperNetworkBuilder._classify_node 保持与超网分层一致
+    try:
+        from hyper.hyper_network_builder import CombatHyperNetworkBuilder as _HNB
+        _classifier = _HNB()._classify_node
+    except Exception:
+        _classifier = None
+
+    _LAYER_COLOR = {
+        'weapon':  '#c62828',
+        'command': '#2e7d32',
+        'ew':      '#d84315',
+        'sensor':  '#1565c0',
+        'unknown': '#546e7a',
+    }
+
     def node_color(n):
+        if _classifier:
+            lyr = _classifier(n)
+            return _LAYER_COLOR.get(lyr, '#546e7a')
+        # fallback（_classifier 不可用时）
         nl = str(n).lower()
-        if any(k in nl for k in ['sam', 'launcher', 'missile', 'ttr']): return '#c62828'
-        if any(k in nl for k in ['iads', 'cmdr', 'command', 'c2', 'ucav']): return '#2e7d32'
+        if any(k in nl for k in ['_ttr', 'acq_radar', 'ew_radar', 'radar_company']): return '#1565c0'
+        if any(k in nl for k in ['_battalion', '_cmdr', 'iads', 'ucav', 'command', 'c2']): return '#2e7d32'
+        if nl.endswith('_target') or nl == 'target': return '#1565c0'
+        if any(k in nl for k in ['launcher', 'missile', 'torpedo', 'weapon', 'munition']): return '#c62828'
         if any(k in nl for k in ['_soj', 'soj_', 'jammer']) or nl.endswith('soj'): return '#d84315'
-        if any(k in nl for k in ['radar', 'sensor', 'esm']): return '#1565c0'
+        if any(k in nl for k in ['radar', 'sensor', 'esm', 'acq', 'sam']): return '#1565c0'
         return '#546e7a'
 
     colors = [node_color(n) for n in G.nodes()]
@@ -553,20 +680,14 @@ def _generate_complex_network(processor, hyper_data, out_path: Path, cfg: dict =
         metrics['top_closeness']   = sorted(close_cent.items(), key=lambda x: x[1], reverse=True)[:_top_n]
         metrics['top_n_actual']    = _top_n  # 记录实际展示数量，供报告使用
 
-        # 节点类型分布
+        # 节点类型分布（复用 _classifier，与节点颜色保持一致）
         type_count = {'radar_sensor': 0, 'ew_soj': 0, 'command': 0, 'weapon': 0, 'other': 0}
+        _lyr_to_tc = {'sensor': 'radar_sensor', 'ew': 'ew_soj',
+                      'command': 'command', 'weapon': 'weapon', 'unknown': 'other'}
         for n in G.nodes():
-            nl = str(n).lower()
-            if any(k in nl for k in ['sam', 'launcher', 'missile', 'ttr']):
-                type_count['weapon'] += 1
-            elif any(k in nl for k in ['iads', 'cmdr', 'command', 'c2', 'ucav']):
-                type_count['command'] += 1
-            elif any(k in nl for k in ['_soj', 'soj_', 'jammer']) or nl.endswith('soj'):
-                type_count['ew_soj'] += 1
-            elif any(k in nl for k in ['radar', 'sensor', 'esm']):
-                type_count['radar_sensor'] += 1
-            else:
-                type_count['other'] += 1
+            lyr = _classifier(n) if _classifier else 'unknown'
+            tc_key = _lyr_to_tc.get(lyr, 'other')
+            type_count[tc_key] += 1
         metrics['type_count'] = type_count
 
         # 度分布统计
@@ -1041,14 +1162,13 @@ class APIHandler(BaseHTTPRequestHandler):
             self._send_json({'ok': False, 'error': '请使用 multipart/form-data 上传'}, 400)
             return
 
-        # 解析 multipart
+        # 解析 multipart：收集所有 files 字段（多个 CSV）和 dir_name 字段
         body = self.rfile.read(content_length)
         boundary = content_type.split('boundary=')[-1].strip().encode()
 
-        csv_data = None
-        csv_name = 'uploaded.csv'
+        csv_files: dict = {}   # {filename: bytes}
+        dir_name = 'sim_data'
 
-        # 简单解析 multipart
         parts = body.split(b'--' + boundary)
         for part in parts:
             if b'Content-Disposition' not in part:
@@ -1058,36 +1178,42 @@ class APIHandler(BaseHTTPRequestHandler):
                 continue
             headers_raw = part[:header_end].decode('utf-8', errors='ignore')
             content = part[header_end + 4:]
-            # 去掉末尾 \r\n
             if content.endswith(b'\r\n'):
                 content = content[:-2]
 
-            if 'filename=' in headers_raw:
-                # 提取文件名：只取 Content-Disposition 行，避免跨行污染
-                cd_line = ''
-                for line in headers_raw.splitlines():
-                    if 'Content-Disposition' in line:
-                        cd_line = line
-                        break
-                for h in cd_line.split(';'):
-                    h = h.strip()
-                    if h.lower().startswith('filename='):
-                        csv_name = h.split('=', 1)[1].strip().strip('"').strip()
-                        break
-                csv_data = content
+            # 提取 Content-Disposition 行
+            cd_line = ''
+            for line in headers_raw.splitlines():
+                if 'Content-Disposition' in line:
+                    cd_line = line
+                    break
 
-        if csv_data is None:
-            self._send_json({'ok': False, 'error': '未找到 CSV 文件'}, 400)
+            # 解析字段名和文件名
+            field_name = ''
+            file_name  = ''
+            for seg in cd_line.split(';'):
+                seg = seg.strip()
+                if seg.lower().startswith('name='):
+                    field_name = seg.split('=', 1)[1].strip().strip('"')
+                elif seg.lower().startswith('filename='):
+                    file_name = seg.split('=', 1)[1].strip().strip('"')
+
+            if field_name == 'files' and file_name.lower().endswith('.csv'):
+                csv_files[file_name] = content
+            elif field_name == 'dir_name' and not file_name:
+                dir_name = content.decode('utf-8', errors='ignore').strip() or dir_name
+
+        if not csv_files:
+            self._send_json({'ok': False, 'error': '未找到 CSV 文件，请选择包含仿真数据的目录'}, 400)
             return
 
-        # 保存 CSV 到临时位置
-        upload_path = _PROJECT_DIR / 'uploaded_data.csv'
-        with open(upload_path, 'wb') as f:
-            f.write(csv_data)
+        # 将所有 CSV 写入临时目录
+        upload_path = _save_csv_files(csv_files)
+        display_name = f'{dir_name}/ ({len(csv_files)} 个 CSV)'
 
         _set_state(
             status='running', progress=1, stage='准备中',
-            csv_name=csv_name, error='', log=[],
+            csv_name=display_name, error='', log=[],
             results={
                 'total_frames': 0, 'nodes': 0, 'edges': 0,
                 'cog_node': '', 'cog_score': 0.0,
@@ -1098,15 +1224,15 @@ class APIHandler(BaseHTTPRequestHandler):
         # 启动分析线程
         _analysis_thread = threading.Thread(
             target=_run_analysis,
-            args=(str(upload_path),),
+            args=(upload_path,),
             daemon=True
         )
         _analysis_thread.start()
 
         self._send_json({
             'ok': True,
-            'message': f'已接收 {csv_name}，分析已启动',
-            'csv_name': csv_name,
+            'message': f'已接收 {display_name}，分析已启动',
+            'csv_name': display_name,
         })
 
 

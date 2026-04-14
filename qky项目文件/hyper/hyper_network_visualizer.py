@@ -17,6 +17,38 @@ from mpl_toolkits.mplot3d import Axes3D   # noqa: F401
 import numpy as np
 from typing import Dict, Any, Optional, List
 
+# ── 中文字体配置 ──────────────────────────────────────────────────────────────
+def _setup_chinese_font():
+    """尝试设置中文字体，优先使用系统内置字体"""
+    import matplotlib.font_manager as fm
+    import os
+    candidates = [
+        '/System/Library/Fonts/STHeiti Medium.ttc',
+        '/System/Library/Fonts/STHeiti Light.ttc',
+        '/Library/Fonts/Arial Unicode.ttf',
+        '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+        '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                prop = fm.FontProperties(fname=path)
+                fname = prop.get_name()
+                matplotlib.rcParams['font.family'] = 'sans-serif'
+                matplotlib.rcParams['font.sans-serif'] = [fname, 'DejaVu Sans']
+                matplotlib.rcParams['axes.unicode_minus'] = False
+                return fname
+            except Exception:
+                continue
+    for name in ['STHeiti', 'Heiti TC', 'PingFang SC', 'SimHei', 'WenQuanYi Zen Hei']:
+        matplotlib.rcParams['font.sans-serif'] = [name, 'DejaVu Sans']
+        matplotlib.rcParams['axes.unicode_minus'] = False
+        return name
+    return None
+
+_CJK_FONT = _setup_chinese_font()
+
 
 # ── 配色 ──────────────────────────────────────────────────────────────────────
 BG_COLOR  = '#eef2f8'
@@ -116,20 +148,44 @@ class HyperNetworkVisualizer:
         ax_deg.set_facecolor(BAR_BG)
         ax_shapley.set_facecolor(BAR_BG)
 
+        # ── 计算有节点的层（active_layers）及压缩后的 z 坐标映射 ──────────────
+        active_layers = [
+            l for l in LAYER_ORDER
+            if any(d.get('layer') == l for _, d in H.nodes(data=True))
+        ]
+        if not active_layers:
+            active_layers = LAYER_ORDER  # 兜底：全部显示
+
+        # 将有节点的层均匀分布在 z 轴上，间距 2.5
+        layer_z_map = {
+            l: i * 2.5
+            for i, l in enumerate(active_layers)
+        }
+
+        # 用压缩后的 z 坐标重建 pos_3d
+        pos_3d = {}
+        for n, d in H.nodes(data=True):
+            layer = d.get('layer', 'sensor')
+            z = layer_z_map.get(layer, 0.0)
+            x, y = self.pos_cache.get(n, (0.0, 0.0))
+            pos_3d[n] = (x, y, z)
+
         # ── 绘制 3D 部分 ──────────────────────────────────────────────────────
-        self._draw_layer_planes(ax3d)
+        self._draw_layer_planes(ax3d, active_layers, layer_z_map)
         self._draw_edges(ax3d, H, pos_3d)
         self._draw_nodes(ax3d, H, pos_3d, gravity_node)
         if gravity_node and gravity_node in pos_3d:
             self._draw_gravity(ax3d, pos_3d[gravity_node], gravity_node)
-        self._draw_title(fig, H, gravity_node, frame_meta)
-        self._draw_legend(fig)
+        self._draw_title(fig, H, gravity_node, frame_meta, active_layers)
+        self._draw_legend(fig, active_layers)
 
+        n_active = len(active_layers)
+        z_top = (n_active - 1) * 2.5
         elev = 30 + 4 * np.sin(np.radians(azim * 0.5))
-        ax3d.set_box_aspect((1, 1, 1.8))
+        ax3d.set_box_aspect((1, 1, max(1.2, 0.45 * n_active)))
         ax3d.set_xlim(-1.35, 1.35)
         ax3d.set_ylim(-1.35, 1.35)
-        ax3d.set_zlim(-0.6, 8.8)
+        ax3d.set_zlim(-0.6, z_top + 1.3)
         ax3d.view_init(elev=elev, azim=azim)
 
         # ── 绘制度中心性条形图（上）────────────────────────────────────────────
@@ -168,12 +224,14 @@ class HyperNetworkVisualizer:
                 y = float(np.clip(r * np.sin(angle), -0.92, 0.92))
                 self.pos_cache[n] = (x, y)
 
-    def _draw_layer_planes(self, ax):
+    def _draw_layer_planes(self, ax, active_layers: list, layer_z_map: dict):
+        """只渲染 active_layers 中的层，z 坐标使用 layer_z_map 中的压缩值"""
         N = 7
         xs = np.linspace(-1.3, 1.3, N)
         ys = np.linspace(-1.3, 1.3, N)
-        for layer in LAYER_ORDER:
-            z, face_c, edge_c, _, label_c = LAYER_CFG[layer]
+        for layer in active_layers:
+            _, face_c, edge_c, _, label_c = LAYER_CFG[layer]
+            z = layer_z_map[layer]
             xx, yy = np.meshgrid([-1.3, 1.3], [-1.3, 1.3])
             zz = np.full_like(xx, z, dtype=float)
             ax.plot_surface(xx, yy, zz, color=face_c, alpha=0.35,
@@ -213,7 +271,8 @@ class HyperNetworkVisualizer:
 
     def _draw_nodes(self, ax, H, pos_3d, gravity_node):
         degrees = dict(H.degree())
-        max_deg = max(degrees.values()) if degrees else 1
+        max_deg = max(degrees.values()) if degrees else 0
+        max_deg = max_deg or 1   # 防止所有节点度数为 0 时除零
 
         for layer in LAYER_ORDER:
             _, _, _, node_c, label_c = LAYER_CFG[layer]
@@ -247,191 +306,135 @@ class HyperNetworkVisualizer:
                 if len(parts) >= 2 and parts[0].isdigit():
                     num = parts[0]
                     rest = '_'.join(p for p in parts[1:]
-                                   if p not in ('large', 'small', 'medium'))
-                    short = f'{num}_{rest}'
+                                   if not p.isdigit())
+                    label = f'{num}_{rest}' if rest else num
                 else:
-                    short = n
-                if len(short) > 12:
-                    short = short[:11] + '.'
-                if deg >= active_thresh:
-                    ax.text(x, y, z + 0.20, short,
-                            color=label_c, fontsize=6.5, fontweight='bold',
-                            ha='center', va='bottom', alpha=0.92, zorder=6)
-                else:
-                    ax.text(x, y, z + 0.18, short,
-                            color=label_c, fontsize=5.0, fontweight='normal',
-                            ha='center', va='bottom', alpha=0.50, zorder=6)
+                    label = n
+                # 截断过长标签
+                if len(label) > 12:
+                    label = label[:11] + '…'
+                fs = 7.5 if deg >= active_thresh else 6.0
+                ax.text(x, y, z + 0.18, label,
+                        color=label_c, fontsize=fs,
+                        fontweight='bold' if deg >= active_thresh else 'normal',
+                        ha='center', va='bottom', zorder=8,
+                        alpha=0.95 if deg >= active_thresh else 0.65)
 
-    def _draw_gravity(self, ax, pos: tuple, name: str):
-        gx, gy, gz = pos
-        for s, a in [(3500, 0.10), (1500, 0.22), (500, 0.70)]:
-            ax.scatter([gx], [gy], [gz], c='#f9a825', s=s,
-                       alpha=a, edgecolors='none', depthshade=False, zorder=8)
-        ax.scatter([gx], [gy], [gz], c='#e65100', s=120,
-                   edgecolors='#f9a825', linewidths=2.5,
-                   alpha=1.0, depthshade=False, zorder=9)
-        z_top = gz + 1.2
-        for lw, a, c in [(7, 0.08, '#f9a825'), (2.5, 0.35, '#f9a825'),
-                         (1.0, 0.75, '#e65100')]:
-            ax.plot([gx, gx], [gy, gy], [gz, z_top],
-                    color=c, lw=lw, alpha=a, zorder=7)
-        # 节点名标签
-        parts = name.split('_')
-        if len(parts) >= 2 and parts[0].isdigit():
-            cog_label = f"{parts[0]}_{'_'.join(p for p in parts[1:] if p not in ('large','small','medium'))}"
-        else:
-            cog_label = name
-        if len(cog_label) > 11:
-            cog_label = cog_label[:10] + '.'
-        ax.text(gx, gy, gz + 0.22, cog_label,
-                color='#e65100', fontsize=6.5, fontweight='bold',
-                ha='center', va='bottom', alpha=0.95, zorder=10)
-        # 3D 图内右上角固定标注
-        short = name if len(name) <= 14 else name[:13] + '.'
-        ax.figure.text(
-            0.66, 0.97,
-            f'★  CoG: {short}',
-            color='#b71c1c', fontsize=9.5, fontweight='bold',
-            va='top', ha='right', fontfamily='monospace',
-            bbox=dict(facecolor='#fff8e1', alpha=0.92,
-                      edgecolor='#f9a825', boxstyle='round,pad=0.4',
-                      linewidth=1.6)
-        )
+    def _draw_gravity(self, ax, pos, gravity_node):
+        x, y, z = pos
+        ax.scatter([x], [y], [z],
+                   c='#FFD700', s=900, marker='*',
+                   edgecolors='#FF6F00', linewidths=2.0,
+                   alpha=1.0, depthshade=False, zorder=12)
+        label = gravity_node
+        if len(label) > 14:
+            label = label[:13] + '…'
+        ax.text(x, y, z + 0.35, f'★ {label}',
+                color='#FF6F00', fontsize=9, fontweight='bold',
+                ha='center', va='bottom', zorder=13)
 
-    def _draw_title(self, fig, H, gravity_node, frame_meta):
+    def _draw_title(self, fig, H, gravity_node, frame_meta, active_layers=None):
         n_nodes = H.number_of_nodes()
         n_edges = H.number_of_edges()
         if frame_meta:
-            t0 = frame_meta.get('t_start', 0)
-            t1 = frame_meta.get('t_end', 0)
             fi = frame_meta.get('frame_idx', 0) + 1
             ft = frame_meta.get('total_frames', 1)
-            time_str = f't = {t0:.0f}s ~ {t1:.0f}s   [{fi}/{ft}]'
+            t0 = frame_meta.get('t_start', 0)
+            t1 = frame_meta.get('t_end', 0)
+            title = (f'Combat Hyper-Network  |  Frame {fi}/{ft}  '
+                     f't={t0:.0f}~{t1:.0f}s  |  '
+                     f'Nodes={n_nodes}  Edges={n_edges}')
         else:
-            time_str = ''
-        title = (f'AFSIM  Hyper-Network  |  {time_str}\n'
-                 f'Nodes: {n_nodes}   Edges: {n_edges}')
-        fig.text(0.34, 0.975, title,
+            title = (f'Combat Hyper-Network  |  '
+                     f'Nodes={n_nodes}  Edges={n_edges}')
+        if gravity_node:
+            gn = gravity_node if len(gravity_node) <= 16 else gravity_node[:15] + '…'
+            title += f'  |  CoG: {gn}'
+        if active_layers and len(active_layers) < len(LAYER_ORDER):
+            missing = [l.upper() for l in LAYER_ORDER if l not in active_layers]
+            title += f'  |  (No {"/".join(missing)} Layer)'
+        fig.text(0.5, 0.985, title,
                  ha='center', va='top',
-                 color='#1a237e', fontsize=10, fontweight='bold',
-                 fontfamily='monospace',
-                 bbox=dict(facecolor='#ffffff', alpha=0.88,
-                           edgecolor='#3949ab', boxstyle='round,pad=0.4',
-                           linewidth=1.2))
+                 fontsize=11, fontweight='bold', color='#1a237e')
 
-    def _draw_legend(self, fig):
-        layer_items = [
-            mpatches.Patch(facecolor='#1565c0', edgecolor='#0d47a1', lw=1.0, label='SENSOR LAYER'),
-            mpatches.Patch(facecolor='#d84315', edgecolor='#bf360c', lw=1.0, label='EW LAYER'),
-            mpatches.Patch(facecolor='#2e7d32', edgecolor='#1b5e20', lw=1.0, label='COMMAND LAYER'),
-            mpatches.Patch(facecolor='#c62828', edgecolor='#b71c1c', lw=1.0, label='WEAPON LAYER'),
+    def _draw_legend(self, fig, active_layers=None):
+        layers_to_show = active_layers if active_layers else LAYER_ORDER
+        patches = [
+            mpatches.Patch(color=LAYER_CFG[l][3], label=f'{l.upper()} Layer')
+            for l in layers_to_show
         ]
-        edge_items = [
-            plt.Line2D([0],[0], color='#1565c0', lw=1.6, alpha=0.75, label='Sensor detection'),
-            plt.Line2D([0],[0], color='#c62828', lw=2.4, alpha=0.92, label='Weapon engagement'),
-            plt.Line2D([0],[0], color='#d84315', lw=2.2, alpha=0.88, label='EW jamming'),
-            plt.Line2D([0],[0], color='#2e7d32', lw=1.6, alpha=0.75, label='Command link'),
-            plt.Line2D([0],[0], marker='*', color='w',
-                       markerfacecolor='#f9a825', markersize=13,
-                       markeredgecolor='#e65100', label='Center of Gravity'),
-        ]
-        fig.legend(
-            handles=layer_items + edge_items,
-            loc='lower left',
-            bbox_to_anchor=(0.01, 0.01),
-            facecolor='#ffffff', edgecolor='#90a4ae',
-            labelcolor='#1a237e', fontsize=7.5,
-            framealpha=0.90, handlelength=1.8,
-            borderpad=0.7, labelspacing=0.45,
-            ncol=1,
-        )
+        patches.append(mpatches.Patch(color='#FFD700', label='CoG Node ★'))
+        fig.legend(handles=patches,
+                   loc='lower left', bbox_to_anchor=(0.01, 0.01),
+                   ncol=len(patches), fontsize=8,
+                   framealpha=0.85, edgecolor='#b0bec5')
 
-    # ── 公共辅助：截短节点名 ──────────────────────────────────────────────────
-    @staticmethod
-    def _shorten(n: str, maxlen: int = 14) -> str:
-        parts = n.split('_')
-        if len(parts) >= 2 and parts[0].isdigit():
-            rest = '_'.join(p for p in parts[1:] if p not in ('large', 'small', 'medium'))
-            s = f"{parts[0]}_{rest}"
-        else:
-            s = n
-        return s[:maxlen] + '.' if len(s) > maxlen else s
+    # ── 右侧面板公共绘制 ──────────────────────────────────────────────────────
 
-    # ── 公共辅助：绘制单个水平条形图面板 ────────────────────────────────────
     def _draw_bar_panel(self, ax, names, values, gravity_node, H,
-                        title: str, xlabel: str, bar_alpha: float = 0.88):
-        """通用水平条形图绘制，文字清晰、高对比度"""
-        ax.set_facecolor(BAR_BG)
+                        title='', xlabel='', bar_alpha=0.80):
         if not names:
-            ax.set_visible(False)
+            ax.text(0.5, 0.5, 'No Data', ha='center', va='center',
+                    transform=ax.transAxes, color='#90a4ae', fontsize=10)
+            ax.set_title(title, fontsize=9, fontweight='bold',
+                         color='#1a237e', pad=6)
             return
 
-        # 颜色按层分配
         colors = []
         for n in names:
-            layer = _get_node_layer(H, n)
-            colors.append(LAYER_BAR_COLOR.get(layer, LAYER_BAR_COLOR['unknown']))
+            lyr = _get_node_layer(H, n)
+            c = LAYER_BAR_COLOR.get(lyr, LAYER_BAR_COLOR['unknown'])
+            if n == gravity_node:
+                c = '#FFD700'
+            colors.append(c)
 
-        y_pos = np.arange(len(names))
+        y_pos = range(len(names))
         bars = ax.barh(y_pos, values, color=colors, alpha=bar_alpha,
-                       edgecolor='white', linewidth=0.7, height=0.62)
+                       edgecolor='white', linewidth=0.8, height=0.65)
 
-        # 高亮 CoG 节点
-        for i, n in enumerate(names):
-            if n == gravity_node:
-                bars[i].set_edgecolor('#e65100')
-                bars[i].set_linewidth(2.2)
-                bars[i].set_alpha(1.0)
+        # 标签：截断过长名称
+        disp_names = []
+        for n in names:
+            dn = n if len(n) <= 14 else n[:13] + '…'
+            disp_names.append(dn)
 
-        # 数值标签 —— 带背景色块保证可读性
-        max_val = max(values) if values else 1.0
-        for i, (val, n) in enumerate(zip(values, names)):
-            is_cog = (n == gravity_node)
-            txt = f'{val:.3f}' + ('  ★' if is_cog else '')
-            fc  = '#fff3e0' if is_cog else '#ffffff'
-            ec  = '#e65100' if is_cog else '#b0bec5'
-            tc  = '#b71c1c' if is_cog else '#1a237e'
-            ax.text(val + max_val * 0.015, i, txt,
-                    va='center', ha='left', fontsize=8.0,
-                    color=tc, fontweight='bold',
-                    bbox=dict(facecolor=fc, edgecolor=ec,
-                              boxstyle='round,pad=0.20', linewidth=0.9,
-                              alpha=0.95))
-
-        # Y 轴节点名 —— 白色背景色块 + 加大字号
-        ax.set_yticks(y_pos)
-        short_names = [self._shorten(n) for n in names]
-        ax.set_yticklabels(short_names, fontsize=9.0, fontweight='bold')
-        for tick, n in zip(ax.get_yticklabels(), names):
-            layer = _get_node_layer(H, n)
-            tick.set_color(LAYER_BAR_COLOR.get(layer, '#263238'))
-            if n == gravity_node:
-                tick.set_fontsize(10.0)
-                tick.set_color('#b71c1c')
-            # 白色背景让文字在任何条形颜色上都清晰
-            tick.set_bbox(dict(facecolor='white', edgecolor='none',
-                               alpha=0.85, pad=2.0))
-
-        # 轴样式
-        ax.set_xlim(0, max_val * 1.58)
-        ax.set_xlabel(xlabel, fontsize=8, color='#37474f', labelpad=3)
-        ax.tick_params(axis='x', labelsize=7.5, colors='#546e7a')
-        ax.tick_params(axis='y', length=0, pad=4)
+        ax.set_yticks(list(y_pos))
+        ax.set_yticklabels(disp_names, fontsize=7.5)
+        ax.set_xlabel(xlabel, fontsize=7.5, color='#455a64')
+        ax.set_xlim(0, max(values) * 1.18 if values else 1)
+        ax.tick_params(axis='x', labelsize=7)
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.spines['bottom'].set_color('#b0bec5')
-        ax.set_axisbelow(True)
+        ax.spines['left'].set_color('#cfd8dc')
+        ax.spines['bottom'].set_color('#cfd8dc')
+
+        # 数值标注
+        for bar, val in zip(bars, values):
+            ax.text(bar.get_width() + max(values) * 0.02 if values else 0.02,
+                    bar.get_y() + bar.get_height() / 2,
+                    f'{val:.3f}', va='center', ha='left',
+                    fontsize=6.5, color='#455a64')
+
         ax.xaxis.grid(True, color='#cfd8dc', linewidth=0.5, linestyle='--')
         ax.set_title(title, fontsize=9, fontweight='bold',
                      color='#1a237e', pad=6, loc='center')
 
     # ── 右上：度中心性 Top-10 ─────────────────────────────────────────────────
     def _draw_degree_bar(self, ax, H, gravity_node, frame_meta):
-        """右上：归一化度中心性 Top-10 水平条形图"""
+        """右上：归一化度中心性 Top-10 水平条形图
+        若当前帧无边（度数全为0），则显示全局度数并标注 No Activity
+        """
         deg = dict(H.degree())
-        max_deg = max(deg.values()) if deg else 1
-        deg_norm = {n: v / max_deg for n, v in deg.items()}
+        total_edges = H.number_of_edges()
+        no_activity = (total_edges == 0)
+
+        if no_activity:
+            # 无边帧：用节点存在性（每个节点度数视为1）作为兜底，显示节点列表
+            deg_norm = {n: 1.0 for n in H.nodes()}
+        else:
+            max_deg = max(deg.values()) if deg else 1
+            max_deg = max_deg or 1
+            deg_norm = {n: v / max_deg for n, v in deg.items()}
 
         top10 = sorted(deg_norm.items(), key=lambda x: x[1], reverse=True)[:10]
         top10_disp = list(reversed(top10))   # 最高分在顶部
@@ -445,12 +448,21 @@ class HyperNetworkVisualizer:
         else:
             sub = 'Global'
 
+        if no_activity:
+            sub += '  ⚠ No Activity'
+
         self._draw_bar_panel(
             ax, names, values, gravity_node, H,
             title=f'Degree Centrality  Top-10\n{sub}',
-            xlabel='Normalized Degree',
-            bar_alpha=0.78,
+            xlabel='Normalized Degree' if not no_activity else 'Node Presence (No Edges)',
+            bar_alpha=0.45 if no_activity else 0.78,
         )
+
+        if no_activity:
+            ax.text(0.98, 0.02, 'No Activity\nin this frame',
+                    ha='right', va='bottom', transform=ax.transAxes,
+                    fontsize=8, color='#b71c1c', alpha=0.75,
+                    style='italic')
 
     # ── 右下：Shapley 分数 Top-10 ─────────────────────────────────────────────
     def _draw_shapley_bar(self, ax, H, shapley_scores, gravity_node, frame_meta):
@@ -477,7 +489,7 @@ class HyperNetworkVisualizer:
 
         self._draw_bar_panel(
             ax, names, values, gravity_node, H,
-            title=f'Shapley + Degree Fusion  Top-10\n{sub}',
-            xlabel='Fusion Score (Shapley×0.5 + Degree×0.5)',
-            bar_alpha=0.88,
+            title=f'Shapley Score  Top-10\n{sub}',
+            xlabel='Shapley Score',
+            bar_alpha=0.82,
         )
