@@ -4,7 +4,7 @@ from typing import Dict, Any
 
 from matplotlib import pyplot as plt
 
-from data_processor import AFSIMDataProcessor
+from data_processor import SimDataProcessor as AFSIMDataProcessor
 from exp.improved_network_builder import ImprovedCombatNetworkBuilder
 from critical_node_analyzer import CriticalNodeAnalyzer
 from gravity_center_analyzer import GravityCenterAnalyzer
@@ -508,7 +508,7 @@ class MainAnalysis:
 
     def _generate_hyper_network_report(self, hyper_data: Dict, hyper_analysis: Dict):
         """生成超网分析报告"""
-        report_content = "# 作战超网分析报告\n\n"
+        report_content = "# 超网分析报告\n\n"
 
         # 超网结构信息
         report_content += "## 超网结构概览\n\n"
@@ -545,7 +545,7 @@ class MainAnalysis:
 # 使用示例
 # if __name__ == "__main__":
 #     # 修改为你的数据路径
-#     data_path = "../data/raw/111.csv"
+#     data_path = "/path/to/csv_dir"
 #
 #     # 运行分析
 #     analyzer = MainAnalysis(data_path)
@@ -566,7 +566,7 @@ class MainAnalysis:
 
 if __name__ == "__main__":
     # 1. 初始化
-    data_path = "../data/raw/111.csv"
+    data_path = "/path/to/csv_dir"  # 修改为实际数据目录
     analyzer = MainAnalysis(data_path)
     analyzer.processor = AFSIMDataProcessor(data_path)
 

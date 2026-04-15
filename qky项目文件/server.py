@@ -519,6 +519,8 @@ def _run_analysis(csv_path: str):
                 'has_video': mp4_path.exists() if 'mp4_path' in dir() else False,
                 'has_reports': True,
                 'has_complex_network': (_VUE_PUBLIC / 'complex_network.png').exists(),
+                't_min': float(t_min),
+                't_max': float(t_max),
             }
         )
         elapsed = time.time() - _state['started_at']
@@ -731,7 +733,7 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
     report += "## 1. 数据概况\n\n"
     report += (f"本次分析共 **{info.get('total_rows', 0):,}** 行记录，"
                f"**{info.get('total_columns', 0)}** 列，"
-               f"涉及 **{info.get('platforms_count', 0)}** 个作战平台，"
+               f"涉及 **{info.get('platforms_count', 0)}** 个平台节点，"
                f"**{len(info.get('message_types', {}))}** 种消息类型。\n\n")
 
     msg_types = info.get('message_types', {})
@@ -742,7 +744,7 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
         report += "\n"
 
     report += "## 2. 超网结构分析\n\n"
-    report += (f"构建的作战超网包含 **{H.number_of_nodes()}** 个节点，**{H.number_of_edges()}** 条边，"
+    report += (f"构建的超网包含 **{H.number_of_nodes()}** 个节点，**{H.number_of_edges()}** 条边，"
                f"**{len(cross_edges)}** 个跨层连接，分为以下 {len(layers)} 个功能层：\n\n")
     report += "| 层名 | 节点数 | 边数 | 功能描述 |\n|------|--------|------|----------|\n"
     layer_desc = {
@@ -807,9 +809,9 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
     if gravity_info:
         gn = gravity_info.get('gravity_node', 'N/A')
         st = gravity_info.get('stability', 'N/A')
-        report += (f"通过 Shapley 值重心分析，识别出作战超网的核心重心节点为 `{gn}`，"
+        report += (f"通过 Shapley 值重心分析，识别出超网的核心重心节点为 `{gn}`，"
                    f"其稳定性评级为 [{st}]。该节点在多层网络中具有最高的边际贡献，"
-                   "是整个作战体系的关键枢纽。\n\n")
+                   "是整个网络体系的关键枢纽。\n\n")
     if summary:
         collapse = summary.get('collapse_step')
         final_drop = summary.get('final_efficiency_drop', 0)
@@ -823,7 +825,7 @@ def _generate_reports(info, hyper_data, analysis, total_frames,
                "1. 对重心节点实施冗余备份，确保单点失效不影响整体功能\n"
                "2. 增加关键节点之间的旁路连接，提升网络连通冗余度\n"
                "3. 建立分布式指挥架构，避免过度依赖单一指挥节点\n"
-               "4. 定期进行级联失效演练，验证网络韧性\n\n")
+               "4. 定期进行级联失效仿真，验证网络韧性\n\n")
 
     # ── 第7节：综合复杂网络分析（嵌入综合报告） ──────────────────
     if cn_metrics:

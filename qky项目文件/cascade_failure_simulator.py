@@ -344,7 +344,7 @@ class CascadeFailureSimulator:
     def generate_markdown_report(self,
                                  sim_result: Dict[str, Any],
                                  shapley_results: Optional[Dict[str, Any]] = None,
-                                 network_name: str = "作战超网") -> str:
+                                 network_name: str = "超网") -> str:
         """
         生成完整的 Markdown 格式级联失效分析报告
 
@@ -569,6 +569,6 @@ class CascadeFailureSimulator:
         recs += "1. 对最高优先级节点实施冗余备份，确保单点失效不影响整体功能\n"
         recs += "2. 增加关键节点之间的旁路连接，提升网络连通冗余度\n"
         recs += "3. 建立分布式指挥架构，避免过度依赖单一指挥节点\n"
-        recs += "4. 定期进行级联失效演练，验证网络韧性\n\n"
+        recs += "4. 定期进行级联失效仿真，验证网络韧性\n\n"
 
         return recs

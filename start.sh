@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# AFSIM Hyper-Network Analyzer — 一键启动脚本
+# Hyper-Network Analyzer — 一键启动脚本
 # 用法：bash start.sh
 # ============================================================
 
@@ -11,7 +11,7 @@ PYTHON_DIR="$SCRIPT_DIR/qky项目文件"
 VUE_DIR="$SCRIPT_DIR/hyper-viz"
 
 echo "============================================"
-echo "  AFSIM Hyper-Network Analyzer"
+echo "  Hyper-Network Analyzer"
 echo "============================================"
 echo ""
 
@@ -43,15 +43,12 @@ echo ""
 echo "🔍 检查 Python 依赖..."
 MISSING_DEPS=""
 for pkg in networkx pandas numpy matplotlib Pillow; do
-  if ! $PYTHON_BIN -c "import ${pkg,,}" 2>/dev/null; then
-    # 特殊处理包名映射
-    case $pkg in
-      Pillow) import_name="PIL" ;;
-      *) import_name="${pkg,,}" ;;
-    esac
-    if ! $PYTHON_BIN -c "import $import_name" 2>/dev/null; then
-      MISSING_DEPS="$MISSING_DEPS $pkg"
-    fi
+  case $pkg in
+    Pillow) import_name="PIL" ;;
+    *) import_name=$(echo "$pkg" | tr '[:upper:]' '[:lower:]') ;;
+  esac
+  if ! $PYTHON_BIN -c "import $import_name" 2>/dev/null; then
+    MISSING_DEPS="$MISSING_DEPS $pkg"
   fi
 done
 

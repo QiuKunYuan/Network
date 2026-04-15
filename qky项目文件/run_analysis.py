@@ -3,11 +3,11 @@
 """
 run_analysis.py
 ===============
-端到端主入口：AFSIM 仿真数据 → 超网构建 → Shapley 重心分析 → 级联失效模拟
+端到端主入口：多源仿真数据 → 超网构建 → Shapley 重心分析 → 级联失效模拟
                 → 视频帧序列 → 分析报告
 
 用法：
-    python run_analysis.py                          # 使用默认 111.csv
+    python run_analysis.py                          # 使用默认数据目录
     python run_analysis.py --csv path/to/data.csv  # 指定数据文件
     python run_analysis.py --frames 30             # 指定视频帧数
     python run_analysis.py --no-video              # 跳过视频帧生成
@@ -97,11 +97,11 @@ class FullAnalysisPipeline:
         """执行完整分析流程"""
         t0 = time.time()
         print("=" * 60)
-        print("  AFSIM 超网重心分析 + 级联失效模拟  ")
+        print("  超网重心分析 + 级联失效模拟  ")
         print("=" * 60)
 
         # Step 1: 加载数据
-        print("\n[Step 1] 加载 AFSIM 仿真数据...")
+        print("\n[Step 1] 加载仿真数据...")
         self._step1_load_data()
 
         # Step 2: 构建全量超网（用于 Shapley + 级联失效）
@@ -502,7 +502,7 @@ class FullAnalysisPipeline:
 
         # ── 7. 标题 & 进度条 ───────────────────────────────────────
         ax.set_title(
-            f"AFSIM Hyper-Network  |  t = {t_start:.0f}s ~ {t_end:.0f}s  "
+            f"Hyper-Network  |  t = {t_start:.0f}s ~ {t_end:.0f}s  "
             f"|  Active nodes: {G_active.number_of_nodes()}  "
             f"Edges: {G_active.number_of_edges()}",
             color='white', fontsize=11, pad=10
@@ -760,7 +760,7 @@ class FullAnalysisPipeline:
         cascade = analysis.get('cascade_failure', {})
         hyper_result = cascade.get('hyper_result', {})
 
-        report = f"# AFSIM 作战超网综合分析报告\n\n"
+        report = f"# 超网综合分析报告\n\n"
         report += f"> 生成时间：{now}  \n"
         report += f"> 数据文件：`{os.path.basename(self.csv_path)}`  \n"
         report += f"> 分析方法：多层超网 + Shapley 值重心分析 + Monte Carlo 级联失效模拟\n\n"
@@ -768,9 +768,9 @@ class FullAnalysisPipeline:
 
         # 1. 数据概况
         report += "## 1. 数据概况\n\n"
-        report += f"本次分析使用 AFSIM 仿真数据，共 **{data_info.get('total_rows', 0):,}** 行记录，"
+        report += f"本次分析共 **{data_info.get('total_rows', 0):,}** 行记录，"
         report += f"**{data_info.get('total_columns', 0)}** 列，"
-        report += f"涉及 **{data_info.get('platforms_count', 0)}** 个作战平台，"
+        report += f"涉及 **{data_info.get('platforms_count', 0)}** 个平台节点，"
         report += f"**{len(data_info.get('message_types', {}))}** 种消息类型。\n\n"
 
         msg_types = data_info.get('message_types', {})
@@ -784,7 +784,7 @@ class FullAnalysisPipeline:
 
         # 2. 超网结构
         report += "## 2. 超网结构分析\n\n"
-        report += f"构建的作战超网包含 **{H.number_of_nodes()}** 个节点，**{H.number_of_edges()}** 条边，"
+        report += f"构建的超网包含 **{H.number_of_nodes()}** 个节点，**{H.number_of_edges()}** 条边，"
         report += f"**{len(cross_edges)}** 个跨层连接，分为以下 {len(layers)} 个功能层：\n\n"
 
         report += "| 层名 | 节点数 | 边数 | 功能描述 |\n"
@@ -904,9 +904,9 @@ class FullAnalysisPipeline:
         if gravity_info:
             gravity_node = gravity_info.get('gravity_node', 'N/A')
             stability = gravity_info.get('stability', 'N/A')
-            conclusion += f"通过 Shapley 值重心分析，识别出作战超网的核心重心节点为 `{gravity_node}`，"
+            conclusion += f"通过 Shapley 值重心分析，识别出超网的核心重心节点为 `{gravity_node}`，"
             conclusion += f"其稳定性评级为 [{stability}]。该节点在多层网络中具有最高的边际贡献，"
-            conclusion += "是整个作战体系的关键枢纽。\n\n"
+            conclusion += "是整个网络体系的关键枢纽。\n\n"
 
         if summary:
             collapse = summary.get('collapse_step')
@@ -932,14 +932,14 @@ class FullAnalysisPipeline:
         conclusion += "1. 对重心节点实施冗余备份，确保单点失效不影响整体功能\n"
         conclusion += "2. 增加关键节点之间的旁路连接，提升网络连通冗余度\n"
         conclusion += "3. 建立分布式指挥架构，避免过度依赖单一指挥节点\n"
-        conclusion += "4. 定期进行级联失效演练，验证网络韧性\n\n"
+        conclusion += "4. 定期进行级联失效仿真，验证网络韧性\n\n"
 
         return conclusion
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='AFSIM 超网重心分析 + 级联失效模拟',
+        description='超网重心分析 + 级联失效模拟',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )

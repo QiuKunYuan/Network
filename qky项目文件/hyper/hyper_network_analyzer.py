@@ -95,7 +95,7 @@ class HyperNetworkAnalyzer:
             md_report = self.cascade_simulator.generate_markdown_report(
                 cascade_result,
                 shapley_results=shapley_gravity,
-                network_name="作战超网"
+                network_name="超网"
             )
             analysis_results['cascade_report_md'] = md_report
 

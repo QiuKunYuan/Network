@@ -5,28 +5,39 @@
       <div class="header-left">
         <span class="logo">⬡</span>
         <div class="title-block">
-          <h1>AFSIM 超网分析系统</h1>
+          <h1>超网分析系统</h1>
         </div>
       </div>
       <div class="header-center">
-        <!-- CSV 文件导入 -->
-        <label class="import-btn" :class="{ loaded: analysisStatus === 'done', running: analysisStatus === 'running' }">
-          <input type="file" accept=".csv" @change="onCsvImport" style="display:none"
-                 :disabled="analysisStatus === 'running'" />
+        <!-- 隐藏的文件选择 input（目录模式） -->
+        <input ref="fileInputDir" type="file" webkitdirectory multiple
+               @change="onCsvImport" style="display:none"
+               :disabled="analysisStatus === 'running'" />
+        <!-- 隐藏的文件选择 input（多文件模式，Safari 兜底） -->
+        <input ref="fileInputMulti" type="file" multiple accept=".csv"
+               @change="onCsvImport" style="display:none"
+               :disabled="analysisStatus === 'running'" />
+
+        <!-- 数据导入按钮 -->
+        <button
+          class="import-btn"
+          :class="{ loaded: analysisStatus === 'done', running: analysisStatus === 'running' }"
+          :disabled="analysisStatus === 'running'"
+          @click="triggerFileInput"
+        >
           <span class="import-icon">
             {{ analysisStatus === 'running' ? '⟳' : analysisStatus === 'done' ? '✓' : '⊕' }}
           </span>
           <span>{{ importBtnLabel }}</span>
-        </label>
+        </button>
         <!-- 取消按钮 -->
         <button v-if="analysisStatus === 'running'" class="cancel-btn" @click="cancelAnalysis">
           ✕ 取消
         </button>
         <!-- 重新导入按钮（done 状态下显示） -->
-        <label v-if="analysisStatus === 'done'" class="reimport-btn">
-          <input type="file" accept=".csv" @change="onCsvImport" style="display:none" />
+        <button v-if="analysisStatus === 'done'" class="reimport-btn" @click="triggerFileInput">
           ↺ 重新导入
-        </label>
+        </button>
         <!-- 统计标签 -->
         <div v-if="analysisStatus === 'done'" class="csv-stats">
           <span class="cs-tag">{{ serverResults.nodes }} 节点</span>
@@ -60,7 +71,7 @@
             </span>
             <div>
               <div class="ac-title">
-                {{ analysisStatus === 'error' ? '分析失败' : 'AFSIM 超网分析中' }}
+                {{ analysisStatus === 'error' ? '分析失败' : '超网分析中' }}
               </div>
               <div class="ac-stage">{{ analysisStage }}</div>
             </div>
@@ -113,11 +124,44 @@
       <!-- 右侧内容区 -->
       <main class="content">
 
+        <!-- ══ 空状态引导页（无数据时全屏显示）══ -->
+        <transition name="fade">
+          <div v-if="analysisStatus === 'idle'" class="welcome-overlay">
+            <div class="welcome-card">
+              <!-- 动态网络图标 -->
+              <div class="wc-icon">
+                <div class="wc-ring wc-ring1"></div>
+                <div class="wc-ring wc-ring2"></div>
+                <div class="wc-ring wc-ring3"></div>
+                <span class="wc-star">⬡</span>
+              </div>
+              <h2 class="wc-title">超网分析系统</h2>
+              <p class="wc-desc">导入仿真数据目录，自动构建多层超网并完成<br>Shapley 重心分析 · 级联失效模拟 · 3D 动态复盘</p>
+
+              <!-- 四层说明 -->
+              <div class="wc-layers">
+                <div class="wc-layer" v-for="l in welcomeLayers" :key="l.name">
+                  <span class="wc-dot" :style="{ background: l.color }"></span>
+                  <span class="wc-lname">{{ l.name }}</span>
+                  <span class="wc-ldesc">{{ l.desc }}</span>
+                </div>
+              </div>
+
+              <!-- 导入按钮 -->
+              <button class="wc-import-btn" @click="triggerFileInput">
+                <span>⊕</span>
+                <span>选择数据目录开始分析</span>
+              </button>
+              <p class="wc-hint">支持目录导入（含 BaseEntity.csv、Communication.csv 等仿真 CSV）</p>
+            </div>
+          </div>
+        </transition>
+
         <!-- ══ Tab 1: 超网整体视频 ══ -->
         <section v-show="activeTab === 1" class="tab-panel">
           <div class="panel-header">
-            <h2>⬡ 超网动态演化动画</h2>
-            <p>3D 旋转多层作战网络 · 360° · {{ totalFrames }} 帧 · t = 0 ~ 2400s</p>
+<h2>⬡ 3D超网动态演化复盘</h2>
+          <p>3D 旋转多层作战网络 · 360° · {{ totalFrames }} 帧{{ timeRangeLabel }}</p>
           </div>
           <div class="video-wrap">
             <!-- 封面 -->
@@ -142,15 +186,15 @@
                   <div class="ring ring3"></div>
                   <span class="center-star">★</span>
                 </div>
-                <h3>3D 超网动态演化动画</h3>
-                <p>360° 旋转 · {{ totalFrames }} 帧 · t = 0 ~ 2400s</p>
+                <h3>3D超网动态演化复盘</h3>
+                <p>360° 旋转 · {{ totalFrames }} 帧{{ timeRangeLabel }}</p>
                 <button
                   class="play-btn"
-                  :class="{ disabled: !videoReady }"
-                  @click="videoReady && startVideo()"
+                  :class="{ disabled: analysisStatus === 'running' }"
+                  @click="videoReady ? startVideo() : (analysisStatus !== 'running' && triggerFileInput())"
                 >
-                  <span>▶</span>
-                  <span>{{ videoReady ? '播放动画' : (analysisStatus === 'running' ? '分析中...' : '请先导入 CSV') }}</span>
+                  <span>{{ videoReady ? '▶' : (analysisStatus === 'running' ? '⟳' : '⊕') }}</span>
+                  <span>{{ videoReady ? '播放动画' : (analysisStatus === 'running' ? '分析中...' : '导入 CSV 开始分析') }}</span>
                 </button>
               </div>
               <div class="cover-bottombar">
@@ -362,12 +406,299 @@
           </div>
         </section>
 
+        <!-- ══ Tab 5: 参数配置 ══ -->
+        <section v-show="activeTab === 5" class="tab-panel">
+          <div class="panel-header">
+            <h2>⚙ 参数配置</h2>
+            <p>调整分析算法参数 · 修改后下次导入 CSV 时生效</p>
+          </div>
+          <div class="cfg-layout">
+
+            <!-- 左列 -->
+            <div class="cfg-col">
+
+              <!-- Shapley 分析 -->
+              <div class="cfg-card">
+                <div class="cfg-card-title">🧮 Shapley 分析</div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    蒙特卡洛采样次数
+                    <span class="cfg-hint">越大越精确，越慢（建议 50~500）</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.shapley_samples" min="10" max="2000" step="10" />
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    级联失效 Monte Carlo 轮数
+                    <span class="cfg-hint">越多结果越稳定（建议 10~100）</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.cascade_rounds" min="1" max="200" step="5" />
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    级联失效崩溃阈值 (%)
+                    <span class="cfg-hint">效率下降超过此值视为网络崩溃</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.collapse_threshold_pct" min="10" max="90" step="5" />
+                    <span class="cfg-unit">%</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 重心融合权重 -->
+              <div class="cfg-card">
+                <div class="cfg-card-title">⚖ 重心融合权重</div>
+                <div class="cfg-note">度中心性权重 + Shapley 权重 = 1.0</div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    度中心性权重
+                    <span class="cfg-hint">局部连接强度的贡献比例</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.degree_weight"
+                      min="0" max="1" step="0.05"
+                      @input="cfg.shapley_weight = +(1 - cfg.degree_weight).toFixed(2)" />
+                    <span class="cfg-val">{{ cfg.degree_weight.toFixed(2) }}</span>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    Shapley 值权重
+                    <span class="cfg-hint">全局协同贡献的比例（自动联动）</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.shapley_weight"
+                      min="0" max="1" step="0.05"
+                      @input="cfg.degree_weight = +(1 - cfg.shapley_weight).toFixed(2)" />
+                    <span class="cfg-val">{{ cfg.shapley_weight.toFixed(2) }}</span>
+                  </div>
+                </div>
+                <div class="cfg-weight-bar">
+                  <div class="cwb-fill deg" :style="{ width: (cfg.degree_weight * 100) + '%' }">
+                    <span v-if="cfg.degree_weight > 0.12">度 {{ (cfg.degree_weight*100).toFixed(0) }}%</span>
+                  </div>
+                  <div class="cwb-fill shap" :style="{ width: (cfg.shapley_weight * 100) + '%' }">
+                    <span v-if="cfg.shapley_weight > 0.12">Shapley {{ (cfg.shapley_weight*100).toFixed(0) }}%</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 桥梁加分融合 -->
+              <div class="cfg-card">
+                <div class="cfg-card-title">🌉 跨层桥梁加分融合</div>
+                <div class="cfg-note">基础 Shapley 比例 + 桥梁加分比例 = 1.0</div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    基础 Shapley 保留比例
+                    <span class="cfg-hint">原始 Shapley 值的保留程度</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.shapley_base_weight"
+                      min="0" max="1" step="0.05"
+                      @input="cfg.bridge_bonus_weight = +(1 - cfg.shapley_base_weight).toFixed(2)" />
+                    <span class="cfg-val">{{ cfg.shapley_base_weight.toFixed(2) }}</span>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    跨层桥梁加分比例
+                    <span class="cfg-hint">奖励跨层枢纽节点的力度（自动联动）</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.bridge_bonus_weight"
+                      min="0" max="1" step="0.05"
+                      @input="cfg.shapley_base_weight = +(1 - cfg.bridge_bonus_weight).toFixed(2)" />
+                    <span class="cfg-val">{{ cfg.bridge_bonus_weight.toFixed(2) }}</span>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- 右列 -->
+            <div class="cfg-col">
+
+              <!-- 逐帧动态融合 -->
+              <div class="cfg-card">
+                <div class="cfg-card-title">🎞 逐帧动态融合权重</div>
+                <div class="cfg-note">全局 Shapley 权重 + 当前帧度数权重 = 1.0</div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    全局 Shapley 权重
+                    <span class="cfg-hint">保留全局战略价值的比例</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.frame_global_weight"
+                      min="0" max="1" step="0.05"
+                      @input="cfg.frame_degree_weight = +(1 - cfg.frame_global_weight).toFixed(2)" />
+                    <span class="cfg-val">{{ cfg.frame_global_weight.toFixed(2) }}</span>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    当前帧度数权重
+                    <span class="cfg-hint">反映实时活跃度变化的比例（自动联动）</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.frame_degree_weight"
+                      min="0" max="1" step="0.05"
+                      @input="cfg.frame_global_weight = +(1 - cfg.frame_degree_weight).toFixed(2)" />
+                    <span class="cfg-val">{{ cfg.frame_degree_weight.toFixed(2) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 视频帧生成 -->
+              <div class="cfg-card">
+                <div class="cfg-card-title">🎬 视频帧生成</div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    生成帧总数
+                    <span class="cfg-hint">帧数越多动画越细腻，耗时越长</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.n_frames" min="10" max="300" step="10" />
+                    <span class="cfg-unit">帧</span>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    视频帧率 (fps)
+                    <span class="cfg-hint">越高播放越快（1=慢速，5=正常）</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.video_fps" min="1" max="30" step="1" />
+                    <span class="cfg-unit">fps</span>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    视频质量 CRF
+                    <span class="cfg-hint">0=无损体积大，51=最差体积小，18=高质量</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.video_crf" min="0" max="51" step="1" />
+                    <span class="cfg-val">{{ cfg.video_crf }}</span>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    3D 旋转起始方位角
+                    <span class="cfg-hint">初始视角方向（0~360°）</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.azim_start" min="0" max="360" step="5" />
+                    <span class="cfg-unit">°</span>
+                  </div>
+                </div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    时间窗口大小
+                    <span class="cfg-hint">0 = 自动计算；手动指定单位为秒</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.time_window_override" min="0" step="10" />
+                    <span class="cfg-unit">s</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 复杂网络图 -->
+              <div class="cfg-card">
+                <div class="cfg-card-title">🕸 复杂网络图</div>
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    介数中心性采样节点数
+                    <span class="cfg-hint">越大越精确，大图建议 50~200</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.cn_betweenness_k" min="10" max="500" step="10" />
+                    <span class="cfg-unit">个</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 关键节点展示模式 -->
+              <div class="cfg-card">
+                <div class="cfg-card-title">🎯 关键节点展示模式</div>
+                <div class="cfg-note">控制报告和排名中展示多少个关键节点（节点多时尤其有用）</div>
+
+                <!-- 模式选择 -->
+                <div class="cfg-row">
+                  <label class="cfg-label">
+                    展示模式
+                    <span class="cfg-hint">选择按固定数量、百分比还是全部展示</span>
+                  </label>
+                  <div class="cfg-mode-btns">
+                    <button class="cfg-mode-btn" :class="{ active: cfg.top_n_mode === 'abs' }" @click="cfg.top_n_mode = 'abs'">固定数量</button>
+                    <button class="cfg-mode-btn" :class="{ active: cfg.top_n_mode === 'pct' }" @click="cfg.top_n_mode = 'pct'">百分比</button>
+                    <button class="cfg-mode-btn" :class="{ active: cfg.top_n_mode === 'all' }" @click="cfg.top_n_mode = 'all'">全部</button>
+                  </div>
+                </div>
+
+                <!-- 固定数量 -->
+                <div v-if="cfg.top_n_mode === 'abs'" class="cfg-row">
+                  <label class="cfg-label">
+                    展示前 N 个节点
+                    <span class="cfg-hint">中心性排名、Shapley 排名均取前 N 个</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="number" class="cfg-input" v-model.number="cfg.top_n_abs" min="1" max="500" step="1" />
+                    <span class="cfg-unit">个</span>
+                  </div>
+                </div>
+
+                <!-- 百分比 -->
+                <div v-if="cfg.top_n_mode === 'pct'" class="cfg-row">
+                  <label class="cfg-label">
+                    展示前 X% 节点
+                    <span class="cfg-hint">按总节点数的百分比动态计算，节点越多展示越多</span>
+                  </label>
+                  <div class="cfg-input-wrap">
+                    <input type="range" class="cfg-slider" v-model.number="cfg.top_n_pct" min="1" max="100" step="1" />
+                    <span class="cfg-val">{{ cfg.top_n_pct }}%</span>
+                  </div>
+                </div>
+
+                <!-- 预览提示 -->
+                <div class="cfg-topn-preview">
+                  <span class="ctp-icon">ℹ</span>
+                  <span v-if="cfg.top_n_mode === 'abs'">
+                    将展示中心性最高的 <b>{{ cfg.top_n_abs }}</b> 个节点
+                  </span>
+                  <span v-else-if="cfg.top_n_mode === 'pct'">
+                    将展示总节点数的 <b>{{ cfg.top_n_pct }}%</b>（如 100 节点 → 展示 {{ Math.max(1, Math.round(100 * cfg.top_n_pct / 100)) }} 个）
+                  </span>
+                  <span v-else>
+                    展示全部节点的排名（节点数很多时报告会较长）
+                  </span>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- 底部操作栏 -->
+          <div class="cfg-actions">
+            <div class="cfg-status-msg" :class="cfgSaveStatus">{{ cfgSaveMsg }}</div>
+            <button class="cfg-btn reset" @click="resetConfig">↺ 恢复默认</button>
+            <button class="cfg-btn save" @click="saveConfig" :disabled="cfgSaving">
+              {{ cfgSaving ? '保存中...' : '✓ 保存配置' }}
+            </button>
+          </div>
+        </section>
+
       </main>
     </div>
 
     <!-- ── 底部状态栏 ── -->
     <footer class="footer">
-      <span>AFSIM 超网分析系统</span>
+      <span>超网分析系统</span>
       <span class="fsep">|</span>
       <span>{{ tabs.find(t => t.id === activeTab)?.label }}</span>
       <span class="fsep">|</span>
@@ -391,10 +722,11 @@ const API_BASE = '/api'
 // ── 导航 tabs ─────────────────────────────────────────────────────────────────
 const activeTab = ref(1)
 const tabs = [
-  { id: 1, icon: '⬡', label: '超网动画',   sub: '3D 旋转视频' },
+  { id: 1, icon: '⬡', label: '超网复盘',   sub: '3D 动态演化' },
   { id: 2, icon: '🎞', label: '帧浏览器',   sub: '时间窗口快照' },
   { id: 3, icon: '📄', label: '分析报告',   sub: 'Markdown 报告' },
   { id: 4, icon: '🕸', label: '复杂网络',   sub: '综合关系图' },
+  { id: 5, icon: '⚙', label: '参数配置',   sub: '调整分析参数' },
 ]
 
 // ── 层信息 ────────────────────────────────────────────────────────────────────
@@ -403,6 +735,14 @@ const layers = [
   { name: '电子战层', nodes: 12, color: '#d84315' },
   { name: '指挥层',   nodes: 15, color: '#2e7d32' },
   { name: '武器层',   nodes: 7,  color: '#c62828' },
+]
+
+// ── 欢迎页四层说明 ────────────────────────────────────────────────────────────
+const welcomeLayers = [
+  { name: 'SENSOR 层',  color: '#1565c0', desc: '雷达 / 传感器 / 探测关系' },
+  { name: 'EW 层',      color: '#d84315', desc: '电子战 / 干扰 / 压制关系' },
+  { name: 'COMMAND 层', color: '#2e7d32', desc: '指挥控制 / C2 通信链路' },
+  { name: 'WEAPON 层',  color: '#c62828', desc: '武器打击 / 导弹 / 火力关系' },
 ]
 
 // ── 分析状态 ──────────────────────────────────────────────────────────────────
@@ -415,10 +755,28 @@ const serverResults    = ref({
   total_frames: 0, nodes: 0, edges: 0,
   cog_node: '', cog_score: 0,
   has_video: false, has_reports: false, has_complex_network: false,
+  t_min: 0, t_max: 0,
 })
 
 // 缓存破坏 key（分析完成后递增，强制刷新图片/视频）
 const refreshKey = ref(0)
+
+// ── 文件选择 input refs ──────────────────────────────────────────────────────
+const fileInputDir   = ref(null)   // 目录模式（webkitdirectory）
+const fileInputMulti = ref(null)   // 多文件模式（Safari 兜底）
+
+function triggerFileInput() {
+  if (analysisStatus.value === 'running') return
+  // 优先尝试目录模式；若浏览器不支持 webkitdirectory 则回退到多文件模式
+  const dirInput = fileInputDir.value
+  if (dirInput) {
+    dirInput.value = ''
+    dirInput.click()
+  } else if (fileInputMulti.value) {
+    fileInputMulti.value.value = ''
+    fileInputMulti.value.click()
+  }
+}
 
 let pollTimer = null
 const logEl = ref(null)
@@ -454,8 +812,8 @@ async function pollStatus() {
       videoPlaying.value = false
       videoPaused.value  = false
       // 重置 input，确保下次可以重新选择文件
-      const fileInput = document.querySelector('.import-btn input[type="file"]')
-      if (fileInput) fileInput.value = ''
+      if (fileInputDir.value)   fileInputDir.value.value   = ''
+      if (fileInputMulti.value) fileInputMulti.value.value = ''
     } else if (data.status === 'error') {
       stopPolling()
     }
@@ -473,14 +831,31 @@ function stopPolling() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 }
 
-// ── CSV 导入 → 上传到后端 ─────────────────────────────────────────────────────
+// ── 目录导入 → 收集 CSV → 上传到后端 ────────────────────────────────────────
 async function onCsvImport(e) {
-  const file = e.target.files[0]
-  if (!file) return
-  e.target.value = ''  // 立即重置，确保下次选同一文件也能触发 change
+  // webkitdirectory 模式下 files 是目录内所有文件
+  const allFiles = Array.from(e.target.files || [])
+  e.target.value = ''  // 立即重置，确保下次选同一目录也能触发 change
 
+  // 只保留 .csv 文件（大小写不敏感）
+  const csvFiles = allFiles.filter(f => f.name.toLowerCase().endsWith('.csv'))
+  if (csvFiles.length === 0) {
+    alert('所选目录中未找到 CSV 文件，请选择包含仿真数据的目录')
+    return
+  }
+
+  // 取目录名（用第一个文件的 webkitRelativePath 解析）
+  const dirName = csvFiles[0].webkitRelativePath
+    ? csvFiles[0].webkitRelativePath.split('/')[0]
+    : 'sim_data'
+
+  // 构造 multipart：每个 CSV 作为独立字段上传，字段名统一为 'files'
   const formData = new FormData()
-  formData.append('file', file, file.name)
+  for (const f of csvFiles) {
+    // 只传文件名（去掉目录前缀），后端按文件名识别表类型
+    formData.append('files', f, f.name)
+  }
+  formData.append('dir_name', dirName)
 
   try {
     const res = await fetch(`${API_BASE}/upload`, {
@@ -497,8 +872,8 @@ async function onCsvImport(e) {
     } else {
       alert(`上传失败：${data.error}`)
     }
-  } catch (e) {
-    alert(`无法连接到分析服务（请先启动 server.py）\n\n${e.message}`)
+  } catch (err) {
+    alert(`无法连接到分析服务（请先启动 server.py）\n\n${err.message}`)
   }
 }
 
@@ -524,7 +899,7 @@ function resetState() {
 const importBtnLabel = computed(() => {
   if (analysisStatus.value === 'running') return `分析中 ${analysisProgress.value}%`
   if (analysisStatus.value === 'done')    return serverResults.value.cog_node ? `重心: ${serverResults.value.cog_node}` : '分析完成'
-  return '导入 CSV'
+  return '选择数据目录'
 })
 
 const videoReady = computed(() =>
@@ -599,9 +974,23 @@ const frameAutoPlay = ref(false)
 const frameKey      = computed(() => `${currentFrame.value}-${refreshKey.value}`)
 let   frameTimer    = null
 
-const TIME_TOTAL = 2400
-function frameTimeStart(i) { return Math.round(i * (TIME_TOTAL / totalFrames.value)) }
-function frameTimeEnd(i)   { return Math.round((i + 1) * (TIME_TOTAL / totalFrames.value)) }
+// 时间范围从后端结果中读取，无数据时为 0
+const timeTotal = computed(() =>
+  analysisStatus.value === 'done' && serverResults.value.t_max > 0
+    ? serverResults.value.t_max
+    : 0
+)
+const timeRangeLabel = computed(() =>
+  timeTotal.value > 0 ? ` · t = 0 ~ ${Math.round(timeTotal.value)}s` : ''
+)
+function frameTimeStart(i) {
+  const total = timeTotal.value || totalFrames.value
+  return Math.round(i * (total / totalFrames.value))
+}
+function frameTimeEnd(i) {
+  const total = timeTotal.value || totalFrames.value
+  return Math.round((i + 1) * (total / totalFrames.value))
+}
 
 function frameSrc(i) {
   return `/frames/frame_${String(i).padStart(4, '0')}.png?v=${refreshKey.value}`
@@ -699,10 +1088,82 @@ const netMetrics  = computed(() => {
   ]
 })
 
+// ── Tab5: 参数配置 ────────────────────────────────────────────────────────────
+const CFG_DEFAULTS = {
+  shapley_samples:        150,
+  cascade_rounds:         20,
+  degree_weight:          0.4,
+  shapley_weight:         0.6,
+  shapley_base_weight:    0.7,
+  bridge_bonus_weight:    0.3,
+  frame_global_weight:    0.5,
+  frame_degree_weight:    0.5,
+  n_frames:               60,
+  video_fps:              2,
+  video_crf:              18,
+  azim_start:             35,
+  time_window_override:   0,
+  cn_betweenness_k:       100,
+  cn_top_n:               10,       // 兼容旧版，由后端根据 top_n_mode 计算
+  top_n_mode:             'abs',    // 'abs' | 'pct' | 'all'
+  top_n_abs:              10,       // 固定数量模式：展示前 N 个
+  top_n_pct:              10,       // 百分比模式：展示前 X%
+  collapse_threshold_pct: 50.0,
+}
+
+const cfg        = ref({ ...CFG_DEFAULTS })
+const cfgSaving  = ref(false)
+const cfgSaveMsg = ref('')
+const cfgSaveStatus = ref('')  // 'ok' | 'err' | ''
+
+async function loadConfig() {
+  try {
+    const res = await fetch(`${API_BASE}/config`)
+    if (!res.ok) return
+    const data = await res.json()
+    Object.assign(cfg.value, data)
+  } catch {}
+}
+
+async function saveConfig() {
+  cfgSaving.value = true
+  cfgSaveMsg.value = ''
+  try {
+    const res = await fetch(`${API_BASE}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg.value),
+    })
+    const data = await res.json()
+    if (data.ok) {
+      cfgSaveMsg.value = '✓ 配置已保存，下次分析时生效'
+      cfgSaveStatus.value = 'ok'
+    } else {
+      cfgSaveMsg.value = `✕ 保存失败：${data.error}`
+      cfgSaveStatus.value = 'err'
+    }
+  } catch (e) {
+    cfgSaveMsg.value = `✕ 无法连接后端：${e.message}`
+    cfgSaveStatus.value = 'err'
+  } finally {
+    cfgSaving.value = false
+    setTimeout(() => { cfgSaveMsg.value = ''; cfgSaveStatus.value = '' }, 4000)
+  }
+}
+
+function resetConfig() {
+  Object.assign(cfg.value, CFG_DEFAULTS)
+  cfgSaveMsg.value = '已恢复默认值，点击「保存配置」使其生效'
+  cfgSaveStatus.value = ''
+  setTimeout(() => { cfgSaveMsg.value = '' }, 3000)
+}
+
 // ── 生命周期 ──────────────────────────────────────────────────────────────────
 onMounted(async () => {
   // 启动时查询一次后端状态（可能上次分析已完成）
   await pollStatus()
+  // 加载后端当前配置
+  await loadConfig()
   // 如果后端正在运行，继续轮询
   if (analysisStatus.value === 'running') {
     startPolling()
@@ -746,7 +1207,10 @@ onUnmounted(() => {
   background: #161b22; border: 1px solid #30363d;
   font-size: 11px; color: #8b949e; transition: all 0.2s;
   font-family: inherit;
+  /* button reset */
+  outline: none; user-select: none;
 }
+.import-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 .import-btn:hover { border-color: #1565c0; color: #e6edf3; }
 .import-btn.loaded  { border-color: #2ea043; color: #2ea043; }
 .import-btn.running { border-color: #f9a825; color: #f9a825; animation: pulse-border 1.5s ease-in-out infinite; }
@@ -861,7 +1325,7 @@ onUnmounted(() => {
 .nav-btn.active .nav-sub { color: #8b949e; }
 
 /* ── Content ── */
-.content { flex: 1; min-width: 0; overflow: hidden; }
+.content { flex: 1; min-width: 0; overflow: hidden; position: relative; }
 .tab-panel { height: 100%; display: flex; flex-direction: column; padding: 16px 20px; gap: 12px; overflow: hidden; }
 
 .panel-header h2 { font-size: 15px; font-weight: 700; color: #e6edf3; }
@@ -1079,6 +1543,113 @@ onUnmounted(() => {
 .nm-label { font-size: 9px; color: #546e7a; text-transform: uppercase; letter-spacing: 0.08em; }
 .nm-value { font-size: 13px; font-weight: 700; color: #e6edf3; }
 
+/* ══ Tab5: Config ══ */
+.cfg-layout {
+  flex: 1; display: flex; gap: 14px; min-height: 0; overflow-y: auto;
+}
+.cfg-col {
+  flex: 1; display: flex; flex-direction: column; gap: 12px; min-width: 0;
+}
+.cfg-card {
+  background: #161b22; border: 1px solid #21262d; border-radius: 10px;
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+}
+.cfg-card-title {
+  font-size: 12px; font-weight: 700; color: #79c0ff;
+  letter-spacing: 0.04em; padding-bottom: 6px;
+  border-bottom: 1px solid #21262d;
+}
+.cfg-note {
+  font-size: 10px; color: #546e7a; margin-top: -4px;
+}
+.cfg-row {
+  display: flex; align-items: center; gap: 12px; min-height: 32px;
+}
+.cfg-label {
+  flex: 1; font-size: 11px; color: #c9d1d9; display: flex; flex-direction: column; gap: 2px;
+  cursor: default;
+}
+.cfg-hint {
+  font-size: 9.5px; color: #546e7a; font-weight: 400;
+}
+.cfg-input-wrap {
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0;
+}
+.cfg-input {
+  width: 80px; padding: 4px 8px;
+  background: #0d1117; border: 1px solid #30363d; border-radius: 6px;
+  color: #e6edf3; font-size: 12px; font-family: inherit;
+  text-align: right;
+  transition: border-color 0.15s;
+}
+.cfg-input:focus { outline: none; border-color: #1565c0; }
+.cfg-unit {
+  font-size: 10px; color: #546e7a; width: 16px;
+}
+.cfg-slider {
+  width: 120px; accent-color: #1565c0; cursor: pointer;
+}
+.cfg-val {
+  font-size: 12px; color: #f9a825; font-weight: 700; width: 36px; text-align: right;
+}
+/* 权重可视化条 */
+.cfg-weight-bar {
+  display: flex; height: 20px; border-radius: 4px; overflow: hidden;
+  border: 1px solid #21262d; margin-top: 2px;
+}
+.cwb-fill {
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; color: #fff; transition: width 0.2s ease;
+  overflow: hidden; white-space: nowrap;
+}
+.cwb-fill.deg  { background: linear-gradient(90deg, #1565c0, #1976d2); }
+.cwb-fill.shap { background: linear-gradient(90deg, #2e7d32, #388e3c); }
+/* 底部操作栏 */
+.cfg-actions {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 10px 0 0; border-top: 1px solid #21262d; margin-top: 4px;
+}
+.cfg-status-msg {
+  flex: 1; font-size: 11px; color: #8b949e;
+}
+.cfg-status-msg.ok  { color: #2ea043; }
+.cfg-status-msg.err { color: #ef5350; }
+.cfg-btn {
+  padding: 7px 18px; border-radius: 8px; cursor: pointer;
+  font-size: 12px; font-weight: 700; font-family: inherit; transition: all 0.2s;
+  white-space: nowrap;
+}
+.cfg-btn.reset {
+  background: #21262d; border: 1px solid #30363d; color: #8b949e;
+}
+.cfg-btn.reset:hover { background: #30363d; color: #e6edf3; }
+.cfg-btn.save {
+  background: linear-gradient(135deg, #1565c0, #0d47a1);
+  border: 1px solid #1976d2; color: #fff;
+}
+.cfg-btn.save:hover:not(:disabled) { background: linear-gradient(135deg, #1976d2, #1565c0); box-shadow: 0 0 12px rgba(21,101,192,0.4); }
+.cfg-btn.save:disabled { opacity: 0.5; cursor: not-allowed; }
+/* 模式切换按钮组 */
+.cfg-mode-btns {
+  display: flex; gap: 4px; flex-shrink: 0;
+}
+.cfg-mode-btn {
+  padding: 4px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 11px; font-family: inherit; font-weight: 600;
+  background: #21262d; border: 1px solid #30363d; color: #8b949e;
+  transition: all 0.15s;
+}
+.cfg-mode-btn:hover { background: #30363d; color: #e6edf3; }
+.cfg-mode-btn.active { background: #1565c0; border-color: #1976d2; color: #fff; }
+/* 预览提示 */
+.cfg-topn-preview {
+  display: flex; align-items: flex-start; gap: 6px;
+  background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+  padding: 8px 10px; font-size: 11px; color: #8b949e; line-height: 1.5;
+}
+.ctp-icon { color: #1565c0; flex-shrink: 0; font-size: 13px; }
+.cfg-topn-preview b { color: #f9a825; }
+
 /* ── Footer ── */
 .footer {
   padding: 8px 20px; background: #161b22; border-top: 1px solid #21262d;
@@ -1088,4 +1659,58 @@ onUnmounted(() => {
 .fstatus { color: #8b949e; }
 .fstatus.active { color: #2ea043; }
 .running-txt { color: #f9a825; }
+
+/* ══ 欢迎引导页 ══ */
+.welcome-overlay {
+  position: absolute; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  background: #0d1117;
+}
+.welcome-card {
+  display: flex; flex-direction: column; align-items: center;
+  gap: 20px; max-width: 520px; width: 90%; text-align: center;
+  padding: 48px 40px;
+  background: #161b22; border: 1px solid #21262d; border-radius: 20px;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.5);
+}
+/* 动态图标 */
+.wc-icon {
+  position: relative; width: 80px; height: 80px;
+  display: flex; align-items: center; justify-content: center;
+}
+.wc-ring {
+  position: absolute; border-radius: 50%;
+  border: 1.5px solid transparent; animation: wc-spin linear infinite;
+}
+.wc-ring1 { width: 80px; height: 80px; border-top-color: #1565c0; animation-duration: 3s; }
+.wc-ring2 { width: 58px; height: 58px; border-top-color: #d84315; animation-duration: 2.2s; animation-direction: reverse; }
+.wc-ring3 { width: 38px; height: 38px; border-top-color: #2e7d32; animation-duration: 1.6s; }
+@keyframes wc-spin { to { transform: rotate(360deg); } }
+.wc-star { font-size: 22px; color: #f9a825; z-index: 1; }
+/* 文字 */
+.wc-title { font-size: 22px; font-weight: 700; color: #e6edf3; margin: 0; letter-spacing: 0.04em; }
+.wc-desc  { font-size: 13px; color: #8b949e; line-height: 1.7; margin: 0; }
+/* 四层说明 */
+.wc-layers {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 10px; width: 100%;
+}
+.wc-layer {
+  display: flex; align-items: center; gap: 8px;
+  background: #0d1117; border: 1px solid #21262d; border-radius: 8px;
+  padding: 10px 12px; text-align: left;
+}
+.wc-dot   { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.wc-lname { font-size: 11px; font-weight: 700; color: #e6edf3; white-space: nowrap; }
+.wc-ldesc { font-size: 10px; color: #8b949e; margin-left: 2px; }
+/* 导入按钮 */
+.wc-import-btn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 32px; border-radius: 50px; cursor: pointer;
+  background: linear-gradient(135deg, #1565c0, #0d47a1);
+  border: 1px solid #1976d2; color: #fff;
+  font-size: 15px; font-weight: 700; font-family: inherit;
+  transition: all 0.2s; outline: none;
+}
+.wc-import-btn:hover { transform: scale(1.04); box-shadow: 0 0 24px rgba(21,101,192,0.5); }
+.wc-hint { font-size: 11px; color: #484f58; margin: 0; }
 </style>

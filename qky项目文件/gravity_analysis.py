@@ -24,7 +24,7 @@ class GravityAnalyzer:
         total_weight = centrality_df[weight_metric].sum()
 
         # 这里需要结合节点的实际位置信息
-        # 简化示例，实际应从AFSIM数据中提取实体位置
+        # 简化示例，实际应从仿真数据中提取实体位置
         gravity_center = {
             'influence_radius': self._calculate_influence_radius(G, centrality_df),
             'critical_mass': total_weight,

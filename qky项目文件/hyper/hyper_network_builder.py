@@ -31,7 +31,7 @@ class CombatHyperNetworkBuilder:
 
     def build_hyper_network(self, processor) -> Dict[str, Any]:
         """
-        构建作战超网。
+        构建超网。
         节点持久化（不清除），边动态化（每次重建）。
         """
         self.layers = {}
@@ -267,7 +267,7 @@ class CombatHyperNetworkBuilder:
                     })
 
     def _connect_ew_to_sensor(self):
-        """电子战层 → 传感器层（对抗关系）"""
+        """电子战层 → 传感器层（对抗连接）"""
         for e_node in self.layers['ew'].nodes():
             for s_node in self.layers['sensor'].nodes():
                 if self._is_adversarial(e_node, s_node):
@@ -347,7 +347,7 @@ class CombatHyperNetworkBuilder:
         # ══════════════════════════════════════════════════════════════════════
 
         # ── sensor：探测/侦察类（优先于 weapon/command）──────────────────────
-        # 侦察无人机、侦察UAV、侦察机 → sensor
+        # 侦察类平台 → sensor
         sensor_priority_cn = ['侦察无人机', '侦察UAV', '侦察机', '侦察舰', '侦察艇']
         if any(kw in n for kw in sensor_priority_cn):
             return 'sensor'
@@ -372,7 +372,7 @@ class CombatHyperNetworkBuilder:
             '导弹', '鱼雷', '火箭弹', '炸弹', '射弹',
             # 攻击型无人平台
             '无人作战艇', '自杀型无人艇', '自杀无人艇',
-            '察打型', '察打Ⅰ', '察打Ⅱ', '察打一', '察打二',  # 察打型UUV（精确匹配，排除纯侦察）
+            '察打型', '察打Ⅰ', '察打Ⅱ', '察打一', '察打二',  # 察打型（精确匹配，排除纯侦察）
             '攻击型无人',
         ]
         weapon_en = ['missile', 'torpedo', 'rocket', 'bomb',
@@ -415,14 +415,16 @@ class CombatHyperNetworkBuilder:
             # 其他
             '指挥', '飞机', '直升机', '运输机', '预警机',
             'UUV', 'UAV',
-            # 通用舰艇后缀
-            '舰', '艇', '船',
         ]
+        # 通用舰艇后缀：用结尾匹配，避免"舰载雷达"等含字但非舰艇的平台误判
+        command_cn_suffix = ['舰', '艇', '船']
         command_en = ['ship', 'vessel', 'submarine', 'boat', 'frigate',
                       'destroyer', 'cruiser', 'carrier', 'corvette',
                       'aircraft', 'plane', 'heli', 'uav', 'ucav',
                       'command', 'c2', 'c4i', 'iads', 'cmdr']
         if any(kw in n for kw in command_cn):
+            return 'command'
+        if any(n.endswith(kw) for kw in command_cn_suffix):
             return 'command'
         if any(kw in nl for kw in command_en):
             return 'command'

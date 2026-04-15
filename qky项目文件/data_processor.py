@@ -4,25 +4,25 @@
 SimDataProcessor — 多 CSV 仿真数据处理器
 ==========================================
 输入：一个目录，目录下包含若干 CSV 文件，文件名对应消息类型：
-    BaseEntity.csv          ← YD_BaseEntity          平台信息（主节点表）
-    Communication.csv       ← JSAF_Communication     通信事件
-    DetectEvent.csv         ← JSAF_DetectEvent        探测事件
-    WeaponFire.csv          ← JSAF_WeaponFire         武器开火
-    MunitionDetonation.csv  ← JSAF_MunitionDetonation 武器爆炸/命中
-    EquipDamage.csv         ← JSAF_EquipDamage        平台毁伤
-    JamingEvent.csv         ← JSAF_JamingEvent        电子干扰
-    ExtTrackMessage.csv     ← JSAF_ExtTrackMessage    融合态势
-    PlatWeaponSurplus.csv   ← JSAF_PlatWeaponSurplus  武器余量
-    PlatSensorState.csv     ← JSAF_PlatSensorState    传感器状态
-    AircraftLaunchEvent.csv ← JSAF_AircraftLaunchEvent 起飞事件
-    AircraftLandEvent.csv   ← 降落事件（字段同起飞）
-    DetectNums.csv          ← DetectNums              传感器处理数量
-    BattleFieldTime.csv     ← JSAF_BattleFieldTime    作战时间
-    AttackOrder.csv         ← JSAF_AttackOrder        打击指令
+    BaseEntity.csv          平台信息（主节点表）
+    Communication.csv       通信事件
+    DetectEvent.csv         探测事件
+    WeaponFire.csv          武器开火
+    MunitionDetonation.csv  武器爆炸/命中
+    EquipDamage.csv         平台毁伤
+    JamingEvent.csv         电子干扰
+    ExtTrackMessage.csv     融合态势
+    PlatWeaponSurplus.csv   武器余量
+    PlatSensorState.csv     传感器状态
+    AircraftLaunchEvent.csv 起飞事件
+    AircraftLandEvent.csv   降落事件
+    DetectNums.csv          传感器处理数量
+    BattleFieldTime.csv     仿真时间
+    AttackOrder.csv         打击指令
 
 设计原则：
   - 每个 CSV 都是可选的，缺失时静默跳过，不影响其他数据
-  - 所有公开方法与旧 AFSIMDataProcessor 接口保持兼容
+  - 所有公开方法与旧接口保持兼容
   - 时间字段统一为 `time`（秒，float），来源优先 BattleFieldTime，
     其次各表的 dwTime/time 字段
 """
@@ -218,7 +218,7 @@ class SimDataProcessor:
 
     用法：
         processor = SimDataProcessor('/path/to/csv_dir')
-        # 之后接口与旧 AFSIMDataProcessor 完全兼容
+        # 之后接口与旧接口完全兼容
     """
 
     def __init__(self, csv_dir: str):
@@ -381,7 +381,7 @@ class SimDataProcessor:
         }
 
     # ─────────────────────────────────────────────────────────────────
-    # 公开接口（与旧 AFSIMDataProcessor 兼容）
+    # 公开接口
     # ─────────────────────────────────────────────────────────────────
 
     def get_data_info(self) -> Dict[str, Any]:
