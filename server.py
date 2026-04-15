@@ -33,8 +33,8 @@ from typing import Optional
 
 # ── 路径配置 ──────────────────────────────────────────────────────────────────
 _THIS_DIR   = Path(__file__).parent.resolve()
-_PROJECT_DIR = _THIS_DIR                                    # qky项目文件/
-_VUE_PUBLIC  = _THIS_DIR.parent / 'hyper-viz' / 'public'   # hyper-viz/public/
+_PROJECT_DIR = _THIS_DIR                                    # 项目根目录
+_VUE_PUBLIC  = _THIS_DIR / 'hyper-viz' / 'public'          # hyper-viz/public/
 
 # 确保 public 目录存在
 _VUE_PUBLIC.mkdir(parents=True, exist_ok=True)
