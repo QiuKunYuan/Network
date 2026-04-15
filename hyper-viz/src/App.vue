@@ -767,12 +767,14 @@ const fileInputMulti = ref(null)   // 多文件模式（Safari 兜底）
 
 function triggerFileInput() {
   if (analysisStatus.value === 'running') return
-  // 优先尝试目录模式；若浏览器不支持 webkitdirectory 则回退到多文件模式
+  // 检测浏览器是否真正支持 webkitdirectory（Safari 老版本不支持）
   const dirInput = fileInputDir.value
-  if (dirInput) {
+  const supportsDir = dirInput && ('webkitdirectory' in dirInput)
+  if (supportsDir) {
     dirInput.value = ''
     dirInput.click()
   } else if (fileInputMulti.value) {
+    // 兜底：多文件选择模式（用户手动选多个 CSV）
     fileInputMulti.value.value = ''
     fileInputMulti.value.click()
   }

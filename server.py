@@ -1164,46 +1164,42 @@ class APIHandler(BaseHTTPRequestHandler):
             self._send_json({'ok': False, 'error': '请使用 multipart/form-data 上传'}, 400)
             return
 
-        # 解析 multipart：收集所有 files 字段（多个 CSV）和 dir_name 字段
+        # 用标准库 email 解析 multipart，兼容所有浏览器的 boundary 格式
         body = self.rfile.read(content_length)
-        boundary = content_type.split('boundary=')[-1].strip().encode()
+        from email import message_from_bytes as _email_parse
+        msg = _email_parse(
+            b'Content-Type: ' + content_type.encode('utf-8', errors='replace') + b'\r\n\r\n' + body
+        )
 
         csv_files: dict = {}   # {filename: bytes}
         dir_name = 'sim_data'
 
-        parts = body.split(b'--' + boundary)
-        for part in parts:
-            if b'Content-Disposition' not in part:
-                continue
-            header_end = part.find(b'\r\n\r\n')
-            if header_end == -1:
-                continue
-            headers_raw = part[:header_end].decode('utf-8', errors='ignore')
-            content = part[header_end + 4:]
-            if content.endswith(b'\r\n'):
-                content = content[:-2]
+        payload = msg.get_payload()
+        if not isinstance(payload, list):
+            payload = []
 
-            # 提取 Content-Disposition 行
-            cd_line = ''
-            for line in headers_raw.splitlines():
-                if 'Content-Disposition' in line:
-                    cd_line = line
-                    break
-
-            # 解析字段名和文件名
+        for part in payload:
+            if not hasattr(part, 'get_payload'):
+                continue
+            cd = part.get('Content-Disposition', '')
             field_name = ''
             file_name  = ''
-            for seg in cd_line.split(';'):
+            for seg in cd.split(';'):
                 seg = seg.strip()
                 if seg.lower().startswith('name='):
                     field_name = seg.split('=', 1)[1].strip().strip('"')
                 elif seg.lower().startswith('filename='):
                     file_name = seg.split('=', 1)[1].strip().strip('"')
 
+            part_data = part.get_payload(decode=True)
+            if part_data is None:
+                continue
+
             if field_name == 'files' and file_name.lower().endswith('.csv'):
-                csv_files[file_name] = content
+                safe_name = os.path.basename(file_name)
+                csv_files[safe_name] = part_data
             elif field_name == 'dir_name' and not file_name:
-                dir_name = content.decode('utf-8', errors='ignore').strip() or dir_name
+                dir_name = part_data.decode('utf-8', errors='ignore').strip() or dir_name
 
         if not csv_files:
             self._send_json({'ok': False, 'error': '未找到 CSV 文件，请选择包含仿真数据的目录'}, 400)
