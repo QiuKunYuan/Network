@@ -152,7 +152,7 @@
                 <span>⊕</span>
                 <span>选择数据目录开始分析</span>
               </button>
-              <p class="wc-hint">支持目录导入（含 BaseEntity.csv、Communication.csv 等仿真 CSV）</p>
+              <p class="wc-hint">支持目录导入仿真 CSV 文件</p>
             </div>
           </div>
         </transition>
