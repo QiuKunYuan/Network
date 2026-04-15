@@ -26,8 +26,16 @@ class HyperNetworkAnalyzer:
         self.shapley_analyzer = ShapelyGravityAnalyzer(n_samples=shapley_samples)
         self.cascade_simulator = CascadeFailureSimulator(n_rounds=cascade_rounds)
 
-    def analyze_hyper_network(self, hyper_network_data: Dict[str, Any]) -> Dict[str, Any]:
-        """分析超网结构（含 Shapley 重心分析 + 级联失效模拟）"""
+    def analyze_hyper_network(self, hyper_network_data: Dict[str, Any],
+                               degree_weight: float = 0.4,
+                               shapley_weight: float = 0.6,
+                               shapley_base_weight: float = 0.7,
+                               bridge_bonus_weight: float = 0.3,
+                               top_n: int = 10) -> Dict[str, Any]:
+        """分析超网结构（含 Shapley 重心分析 + 级联失效模拟）
+
+        :param top_n: Shapley 排名展示前 N 个节点（0 = 全部）
+        """
         print("开始超网分析...")
 
         analysis_results = {}
@@ -47,7 +55,14 @@ class HyperNetworkAnalyzer:
         # 5. Shapley 值重心分析（新增）
         print("\n5. Shapley 值重心分析...")
         try:
-            shapley_results = self.shapley_analyzer.analyze_hyper_network(hyper_network_data)
+            shapley_results = self.shapley_analyzer.analyze_hyper_network(
+                hyper_network_data,
+                degree_weight=degree_weight,
+                shapley_weight=shapley_weight,
+                shapley_base_weight=shapley_base_weight,
+                bridge_bonus_weight=bridge_bonus_weight,
+                top_n=top_n,
+            )
             analysis_results['shapley_gravity'] = shapley_results
             gravity = shapley_results.get('gravity_analysis', {})
             print(f"   超网重心节点（Shapley）: {gravity.get('gravity_node', 'N/A')} "
@@ -80,7 +95,7 @@ class HyperNetworkAnalyzer:
             md_report = self.cascade_simulator.generate_markdown_report(
                 cascade_result,
                 shapley_results=shapley_gravity,
-                network_name="作战超网"
+                network_name="超网"
             )
             analysis_results['cascade_report_md'] = md_report
 
@@ -135,8 +150,10 @@ class HyperNetworkAnalyzer:
                 # 计算该节点在该层的度中心性
                 if layer_net.number_of_nodes() > 0:
                     degree = layer_net.degree(node)
-                    max_degree = max(dict(layer_net.degree()).values())
-                    layer_score = degree / max_degree if max_degree > 0 else 0
+                    _all_degs = dict(layer_net.degree()).values()
+                    max_degree = max(_all_degs) if _all_degs else 0
+                    max_degree = max_degree or 1
+                    layer_score = degree / max_degree
                     scores.append(layer_score)
 
         return np.mean(scores) if scores else 0.0

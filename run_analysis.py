@@ -3,11 +3,11 @@
 """
 run_analysis.py
 ===============
-端到端主入口：AFSIM 仿真数据 → 超网构建 → Shapley 重心分析 → 级联失效模拟
+端到端主入口：多源仿真数据 → 超网构建 → Shapley 重心分析 → 级联失效模拟
                 → 视频帧序列 → 分析报告
 
 用法：
-    python run_analysis.py                          # 使用默认 111.csv
+    python run_analysis.py                          # 使用默认数据目录
     python run_analysis.py --csv path/to/data.csv  # 指定数据文件
     python run_analysis.py --frames 30             # 指定视频帧数
     python run_analysis.py --no-video              # 跳过视频帧生成
@@ -59,7 +59,7 @@ import matplotlib
 matplotlib.use('Agg')  # 无头模式，不弹窗
 import matplotlib.pyplot as plt
 
-from data_processor import AFSIMDataProcessor
+from data_processor import SimDataProcessor
 from centrality_analysis import CentralityAnalyzer
 from hyper.hyper_network_builder import CombatHyperNetworkBuilder
 from hyper.hyper_network_analyzer import HyperNetworkAnalyzer
@@ -97,11 +97,11 @@ class FullAnalysisPipeline:
         """执行完整分析流程"""
         t0 = time.time()
         print("=" * 60)
-        print("  AFSIM 超网重心分析 + 级联失效模拟  ")
+        print("  超网重心分析 + 级联失效模拟  ")
         print("=" * 60)
 
         # Step 1: 加载数据
-        print("\n[Step 1] 加载 AFSIM 仿真数据...")
+        print("\n[Step 1] 加载仿真数据...")
         self._step1_load_data()
 
         # Step 2: 构建全量超网（用于 Shapley + 级联失效）
@@ -135,13 +135,13 @@ class FullAnalysisPipeline:
 
     def _step1_load_data(self):
         if not os.path.exists(self.csv_path):
-            print(f"❌ 文件不存在: {self.csv_path}")
+            print(f"❌ 路径不存在: {self.csv_path}")
             sys.exit(1)
 
-        self.processor = AFSIMDataProcessor(self.csv_path)
+        self.processor = SimDataProcessor(self.csv_path)
         info = self.processor.get_data_info()
+        print(f"  加载表数: {len(info['tables_loaded'])}")
         print(f"  数据行数: {info['total_rows']}")
-        print(f"  列数:     {info['total_columns']}")
         print(f"  平台数:   {info['platforms_count']}")
         print(f"  消息类型: {len(info['message_types'])} 种")
         self.results['data_info'] = info
@@ -502,7 +502,7 @@ class FullAnalysisPipeline:
 
         # ── 7. 标题 & 进度条 ───────────────────────────────────────
         ax.set_title(
-            f"AFSIM Hyper-Network  |  t = {t_start:.0f}s ~ {t_end:.0f}s  "
+            f"Hyper-Network  |  t = {t_start:.0f}s ~ {t_end:.0f}s  "
             f"|  Active nodes: {G_active.number_of_nodes()}  "
             f"Edges: {G_active.number_of_edges()}",
             color='white', fontsize=11, pad=10
@@ -565,14 +565,11 @@ class FullAnalysisPipeline:
         每帧调用 HyperNetworkVisualizer.visualize_hyper_network()，
         azim 角度随帧递增，实现 360° 旋转动画。
         """
-        from data_processor import _find_col, _COL_ALIASES
         from PIL import Image
 
         np.random.seed(42)
 
-        time_col = self.processor._col.get('time') or self.processor.df.columns[0]
-        t_min = float(self.processor.df[time_col].min())
-        t_max = float(self.processor.df[time_col].max())
+        t_min, t_max = self.processor.get_time_range()
         # 时间窗口：均匀切成 n_frames 段，窗口宽度 = 步长（不重叠，切片更短更密集）
         step = max(1.0, (t_max - t_min) / self.n_frames)
 
@@ -607,29 +604,21 @@ class FullAnalysisPipeline:
         # ── 预构建所有帧的图快照 ──────────────────────────────────
         full_H = self.results['hyper_data']['hyper_network']
         frame_graphs = []
-        original_df = self.processor.df
-        original_col = self.processor._col
 
-        for t_start, t_end, df_subset in windows:
-            self.processor.df = df_subset
-            self.processor._col = {k: _find_col(df_subset, k) for k in _COL_ALIASES}
-
+        for t_start, t_end, sub_proc in windows:
             G_snap = nx.Graph()
             G_snap.add_nodes_from(full_H.nodes(data=True))
 
-            for src, tgt, w in self.processor.extract_sensor_detections():
+            for src, tgt, w in sub_proc.extract_sensor_detections():
                 G_snap.add_edge(src, tgt, color='#3498db', weight=w, type='intra')
-            for src, tgt, w in self.processor.extract_weapon_engagements():
+            for src, tgt, w in sub_proc.extract_weapon_engagements():
                 G_snap.add_edge(src, tgt, color='#e74c3c', weight=w, type='inter')
-            for src, tgt, w in self.processor.extract_jamming_relations():
+            for src, tgt, w in sub_proc.extract_jamming_relations():
                 G_snap.add_edge(src, tgt, color='#9b59b6', weight=w, type='inter')
-            for sub, cmd in self.processor.extract_platform_hierarchy().items():
+            for sub, cmd in sub_proc.extract_platform_hierarchy().items():
                 G_snap.add_edge(sub, cmd, color='#2ecc71', weight=0.5, type='inter')
 
             frame_graphs.append((t_start, t_end, G_snap))
-
-        self.processor.df = original_df
-        self.processor._col = original_col
 
         # ── 逐帧渲染 3D 旋转图 ────────────────────────────────────
         print("  开始渲染 3D 旋转动画帧...")
@@ -771,7 +760,7 @@ class FullAnalysisPipeline:
         cascade = analysis.get('cascade_failure', {})
         hyper_result = cascade.get('hyper_result', {})
 
-        report = f"# AFSIM 作战超网综合分析报告\n\n"
+        report = f"# 超网综合分析报告\n\n"
         report += f"> 生成时间：{now}  \n"
         report += f"> 数据文件：`{os.path.basename(self.csv_path)}`  \n"
         report += f"> 分析方法：多层超网 + Shapley 值重心分析 + Monte Carlo 级联失效模拟\n\n"
@@ -779,9 +768,9 @@ class FullAnalysisPipeline:
 
         # 1. 数据概况
         report += "## 1. 数据概况\n\n"
-        report += f"本次分析使用 AFSIM 仿真数据，共 **{data_info.get('total_rows', 0):,}** 行记录，"
+        report += f"本次分析共 **{data_info.get('total_rows', 0):,}** 行记录，"
         report += f"**{data_info.get('total_columns', 0)}** 列，"
-        report += f"涉及 **{data_info.get('platforms_count', 0)}** 个作战平台，"
+        report += f"涉及 **{data_info.get('platforms_count', 0)}** 个平台节点，"
         report += f"**{len(data_info.get('message_types', {}))}** 种消息类型。\n\n"
 
         msg_types = data_info.get('message_types', {})
@@ -795,7 +784,7 @@ class FullAnalysisPipeline:
 
         # 2. 超网结构
         report += "## 2. 超网结构分析\n\n"
-        report += f"构建的作战超网包含 **{H.number_of_nodes()}** 个节点，**{H.number_of_edges()}** 条边，"
+        report += f"构建的超网包含 **{H.number_of_nodes()}** 个节点，**{H.number_of_edges()}** 条边，"
         report += f"**{len(cross_edges)}** 个跨层连接，分为以下 {len(layers)} 个功能层：\n\n"
 
         report += "| 层名 | 节点数 | 边数 | 功能描述 |\n"
@@ -915,9 +904,9 @@ class FullAnalysisPipeline:
         if gravity_info:
             gravity_node = gravity_info.get('gravity_node', 'N/A')
             stability = gravity_info.get('stability', 'N/A')
-            conclusion += f"通过 Shapley 值重心分析，识别出作战超网的核心重心节点为 `{gravity_node}`，"
+            conclusion += f"通过 Shapley 值重心分析，识别出超网的核心重心节点为 `{gravity_node}`，"
             conclusion += f"其稳定性评级为 [{stability}]。该节点在多层网络中具有最高的边际贡献，"
-            conclusion += "是整个作战体系的关键枢纽。\n\n"
+            conclusion += "是整个网络体系的关键枢纽。\n\n"
 
         if summary:
             collapse = summary.get('collapse_step')
@@ -943,19 +932,19 @@ class FullAnalysisPipeline:
         conclusion += "1. 对重心节点实施冗余备份，确保单点失效不影响整体功能\n"
         conclusion += "2. 增加关键节点之间的旁路连接，提升网络连通冗余度\n"
         conclusion += "3. 建立分布式指挥架构，避免过度依赖单一指挥节点\n"
-        conclusion += "4. 定期进行级联失效演练，验证网络韧性\n\n"
+        conclusion += "4. 定期进行级联失效仿真，验证网络韧性\n\n"
 
         return conclusion
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='AFSIM 超网重心分析 + 级联失效模拟',
+        description='超网重心分析 + 级联失效模拟',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
-    parser.add_argument('--csv', default=str(_THIS_DIR / '111.csv'),
-                        help='AFSIM 仿真数据 CSV 路径（默认：111.csv）')
+    parser.add_argument('--csv', default=str(_THIS_DIR),
+                        help='仿真数据目录路径（默认：脚本所在目录）')
     parser.add_argument('--frames', type=int, default=20,
                         help='视频帧数量（默认：20）')
     parser.add_argument('--shapley-samples', type=int, default=150,

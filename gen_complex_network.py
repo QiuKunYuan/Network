@@ -16,11 +16,11 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-CSV_PATH = '/Users/qky/Desktop/HZ/111.csv'
+CSV_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data')
 OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'outputs', 'complex_network.png')
 
 # ── 构建网络 ──────────────────────────────────────────────────────────────────
-proc    = AFSIMDataProcessor(CSV_PATH)
+proc    = AFSIMDataProcessor(CSV_PATH)  # 传入数据目录路径
 builder = CombatNetworkBuilder()
 nets    = builder.build_multi_layer_network(proc)
 

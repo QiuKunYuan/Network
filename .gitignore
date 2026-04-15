@@ -30,7 +30,6 @@ hyper-viz/public/reports/
 
 # outputs 目录（本地调试产物）
 outputs/
-qky项目文件/outputs/
 
 # ── 数据文件（不入库）──────────────────────────────
 *.csv
@@ -61,3 +60,6 @@ nohup.out
 .idea/
 *.swp
 *.swo
+
+# ── 本地工作目录（独立 git 仓库，不追踪）──────────
+qky项目文件/

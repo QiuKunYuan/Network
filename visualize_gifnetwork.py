@@ -91,7 +91,7 @@ def update(frame_idx):
             edge_color='gray',
             width=1.5)
 
-    ax.set_title(f"AFSIM Network - Time: {current_time}s", fontsize=14)
+    ax.set_title(f"Combat Network - Time: {current_time}s", fontsize=14)
 
     # 打印进度条效果
     print(f"正在处理第 {frame_idx + 1}/{len(time_steps)} 帧...", end='\r')

@@ -124,9 +124,9 @@
       <!-- 右侧内容区 -->
       <main class="content">
 
-        <!-- ══ 空状态引导页（无数据时全屏显示）══ -->
+        <!-- ══ 空状态引导页（无数据时全屏显示，覆盖所有 Tab）══ -->
         <transition name="fade">
-          <div v-if="analysisStatus === 'idle'" class="welcome-overlay">
+          <div v-if="analysisStatus === 'idle' && activeTab !== 5" class="welcome-overlay">
             <div class="welcome-card">
               <!-- 动态网络图标 -->
               <div class="wc-icon">
@@ -240,7 +240,7 @@
         </section>
 
         <!-- ══ Tab 2: 时间帧浏览 ══ -->
-        <section v-show="activeTab === 2" class="tab-panel">
+        <section v-show="activeTab === 2 && analysisStatus !== 'idle'" class="tab-panel">
           <div class="panel-header">
             <h2>🎞 时间帧浏览器</h2>
             <p>逐帧浏览时间窗口快照 · 共 {{ totalFrames }} 帧可用</p>
@@ -304,7 +304,7 @@
         </section>
 
         <!-- ══ Tab 3: 报告渲染 ══ -->
-        <section v-show="activeTab === 3" class="tab-panel">
+        <section v-show="activeTab === 3 && analysisStatus !== 'idle'" class="tab-panel">
           <div class="panel-header">
             <h2>📄 分析报告</h2>
             <p>分析流程生成的 Markdown 报告渲染展示</p>
@@ -347,7 +347,7 @@
         </section>
 
         <!-- ══ Tab 4: 综合复杂网络 ══ -->
-        <section v-show="activeTab === 4" class="tab-panel">
+        <section v-show="activeTab === 4 && analysisStatus !== 'idle'" class="tab-panel">
           <div class="panel-header">
             <h2>🕸 综合复杂网络图</h2>
             <p>基于传感器 / 通信 / 指挥关系构建的多层作战网络</p>
